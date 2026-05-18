@@ -82,14 +82,20 @@ def mysql_args(mysql_name, mysql_password=None, mysql_user=None):
 
 @contextmanager
 def mysql_connection(mysql_name, mysql_password=None, mysql_user=None):
-    config = dbt.get_config(mysql_args(mysql_name, mysql_password, mysql_user))
+    args = mysql_args(mysql_name, mysql_password, mysql_user)
+    config = dbt.get_config(args)
     process = None
     conn = None
     try:
-        local_port, process = dbt.start_tunnel(config)
+        if is_direct_mysql(mysql_name):
+            connect_host = config["mysql_host"]
+            connect_port = config["mysql_port"]
+        else:
+            connect_port, process = dbt.start_tunnel(config)
+            connect_host = "127.0.0.1"
         conn = dbt.pymysql.connect(
-            host="127.0.0.1",
-            port=local_port,
+            host=connect_host,
+            port=connect_port,
             user=config["mysql_user"],
             password=config["mysql_password"],
             database=None,
@@ -109,6 +115,15 @@ def mysql_connection(mysql_name, mysql_password=None, mysql_user=None):
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+
+
+def is_direct_mysql(mysql_name):
+    import os
+
+    if os.environ.get("MYSQL_DIRECT", "").lower() in ("1", "true", "yes", "y"):
+        return True
+    env_name = "TEST1_MYSQL_DIRECT" if mysql_name == "test1" else "MARKET_MYSQL_DIRECT"
+    return os.environ.get(env_name, "").lower() in ("1", "true", "yes", "y")
 
 
 def parse_time(value):

@@ -80,10 +80,16 @@ def test1_config(mapping_db=None):
 
 def mapping_connection(mapping_db=None):
     config = test1_config(mapping_db)
-    local_port, process = dbt.start_tunnel(config)
+    process = None
+    if core.is_direct_mysql("test1"):
+        connect_host = config["mysql_host"]
+        connect_port = config["mysql_port"]
+    else:
+        connect_port, process = dbt.start_tunnel(config)
+        connect_host = "127.0.0.1"
     conn = dbt.pymysql.connect(
-        host="127.0.0.1",
-        port=local_port,
+        host=connect_host,
+        port=connect_port,
         user=config["mysql_user"],
         password=config["mysql_password"],
         database=mapping_db or None,

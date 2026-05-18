@@ -539,7 +539,7 @@ LLM_PROVIDER=deepseek</code></pre>
         <div class="panel">
           <h3>9. Docker 配置</h3>
           <pre><code>cp .env.docker.example .env.docker</code></pre>
-          <p class="small">编辑 <code>.env.docker</code>，填入 SSH key 路径、test/test1 MySQL 密码、DeepSeek key。</p>
+          <p class="small">服务器能直连 MySQL 时，保留 <code>MYSQL_DIRECT=yes</code>，填入 test/test1 MySQL 密码和 DeepSeek key 即可。</p>
           <pre><code>docker compose build</code></pre>
         </div>
         <div class="panel">
