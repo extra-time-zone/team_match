@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>球队名称映射方案</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2933;
+      --muted: #5f6b7a;
+      --line: #d8dee6;
+      --paper: #ffffff;
+      --wash: #f5f7fa;
+      --blue: #1f6feb;
+      --green: #13795b;
+      --amber: #a16207;
+      --red: #b42318;
+      --violet: #6f42c1;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--wash);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      line-height: 1.58;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 36px 0 56px;
+    }
+
+    header {
+      padding: 28px 0 24px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 36px 0 14px;
+      font-size: 24px;
+      line-height: 1.24;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    .lead {
+      max-width: 880px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+      gap: 16px;
+    }
+
+    .source-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .source {
+      border-left: 4px solid var(--blue);
+      background: var(--paper);
+      border-radius: 8px;
+      padding: 14px 14px 12px;
+      min-height: 132px;
+      overflow-wrap: anywhere;
+    }
+
+    .source:nth-child(2) {
+      border-left-color: var(--green);
+    }
+
+    .source:nth-child(3) {
+      border-left-color: var(--amber);
+    }
+
+    .source:nth-child(4) {
+      border-left-color: var(--violet);
+    }
+
+    .source strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 16px;
+    }
+
+    .source code,
+    td code,
+    li code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+      background: #eef2f6;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    .solution {
+      position: relative;
+      min-height: 100%;
+    }
+
+    .solution .badge {
+      display: inline-block;
+      margin-bottom: 12px;
+      color: #ffffff;
+      background: var(--blue);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .solution:nth-child(2) .badge {
+      background: var(--green);
+    }
+
+    .solution:nth-child(3) .badge {
+      background: var(--amber);
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    ul,
+    ol {
+      margin: 10px 0 0;
+      padding-left: 20px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #eef3f8;
+      font-size: 14px;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+      margin-top: 12px;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 88px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      text-align: center;
+      font-size: 14px;
+      color: var(--ink);
+    }
+
+    .recommend {
+      border-left: 5px solid var(--green);
+    }
+
+    .risk {
+      border-left: 5px solid var(--red);
+    }
+
+    .small {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 920px) {
+      .grid,
+      .two-col,
+      .source-grid,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        width: min(100% - 24px, 760px);
+        padding-top: 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>球队名称与球队 ID 统一映射方案</h1>
+      <p class="lead">
+        目标是把 thesports、sr、ls 以及后续 bc 的球队名称和源方球队 ID，映射到我们自己的统一球队体系。
+        这个问题属于跨数据源实体对齐，向量数据库可以用于候选召回，但最终真值应该落在可审计的关系型主数据表中。
+      </p>
+      <div class="tag-row">
+        <span class="tag">Entity Resolution</span>
+        <span class="tag">Team Master Data</span>
+        <span class="tag">Vector Recall</span>
+        <span class="tag">Human Review</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>当前数据源</h2>
+      <div class="source-grid">
+        <div class="source">
+          <strong>thesports</strong>
+          <p class="small">位于 test1</p>
+          <p><code>test-thesports-db.ts_fb_match</code></p>
+          <p><code>test-thesports-db.ts_bb_match</code></p>
+        </div>
+        <div class="source">
+          <strong>sr</strong>
+          <p class="small">位于 test</p>
+          <p><code>test2-sportdata-syncer.sr_sport_event</code></p>
+        </div>
+        <div class="source">
+          <strong>ls</strong>
+          <p class="small">位于 test</p>
+          <p><code>test1-lsports-db.ls_sport_event</code></p>
+        </div>
+        <div class="source">
+          <strong>bc</strong>
+          <p class="small">后续加入，预计位于 test1</p>
+          <p><code>test1-bcsports-db.bc_sport_event</code></p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>核心原则</h2>
+      <div class="two-col">
+        <div class="panel recommend">
+          <h3>推荐原则</h3>
+          <ul>
+            <li>我们自己维护一套 <code>our_team_id</code>，不要直接把某个数据源的 ID 当最终主键。</li>
+            <li>MySQL 保存最终映射关系，保证可查询、可回滚、可审计。</li>
+            <li>规则、模糊匹配、向量库、LLM 都只作为候选推荐和辅助判断。</li>
+            <li>高置信度自动确认，中低置信度进入人工审核。</li>
+          </ul>
+        </div>
+        <div class="panel risk">
+          <h3>主要风险</h3>
+          <ul>
+            <li>同名球队可能分属不同国家、联赛、性别、年龄组或预备队。</li>
+            <li>简称、翻译、本地语言、大小写、标点、FC/SC/CF 后缀都会造成名称差异。</li>
+            <li>球队改名、迁移、合并会让历史数据和当前数据产生冲突。</li>
+            <li>单纯靠字符串或向量相似度全自动匹配，容易产生难以发现的错误映射。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>三个方案</h2>
+      <div class="grid">
+        <article class="panel solution">
+          <span class="badge">方案一</span>
+          <h3>MySQL 规则匹配 + 人工确认</h3>
+          <p class="meta">适合第一版快速落地，数据规模可控，团队希望先把主流程跑通。</p>
+          <ul>
+            <li>抽取各源球队 ID、球队名、运动类型、联赛、国家。</li>
+            <li>做名称标准化：小写、去标点、去常见后缀、统一空格。</li>
+            <li>用精确匹配、token 匹配、Levenshtein/Jaro-Winkler 生成候选。</li>
+            <li>人工确认后写入统一映射表和别名表。</li>
+          </ul>
+        </article>
+
+        <article class="panel solution">
+          <span class="badge">方案二</span>
+          <h3>MySQL 主数据 + 向量库候选召回</h3>
+          <p class="meta">推荐作为中长期主方案，兼顾召回能力、可控性和后续扩展。</p>
+          <ul>
+            <li>MySQL 存最终 <code>our_team</code>、<code>source_team</code>、<code>team_mapping</code>。</li>
+            <li>向量库只存球队名称和上下文 embedding。</li>
+            <li>新球队进入时，先用向量 topK 召回候选。</li>
+            <li>结合规则分、向量分、运动类型、国家、联赛进行综合评分。</li>
+          </ul>
+        </article>
+
+        <article class="panel solution">
+          <span class="badge">方案三</span>
+          <h3>LLM 辅助疑难匹配</h3>
+          <p class="meta">适合处理跨语言、历史改名、同名球队等低置信度 case。</p>
+          <ul>
+            <li>规则和向量先给候选 top 5，不让 LLM 自由搜索。</li>
+            <li>LLM 判断是否同一球队，并输出理由和置信度。</li>
+            <li>只处理低置信度或冲突样本，控制成本。</li>
+            <li>最终仍需写入可审核的映射表。</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>推荐架构</h2>
+      <div class="panel">
+        <h3>主流程</h3>
+        <div class="flow">
+          <div class="step">抽取源球队<br>ID / 名称 / 上下文</div>
+          <div class="step">标准化名称<br>生成 source_team</div>
+          <div class="step">规则 + 向量<br>召回候选</div>
+          <div class="step">综合评分<br>自动或待审</div>
+          <div class="step">确认映射<br>沉淀别名</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>建议的数据表</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>表名</th>
+            <th>用途</th>
+            <th>关键字段</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>our_team</code></td>
+            <td>我们自己的球队主数据</td>
+            <td><code>id</code>, <code>sport_type</code>, <code>country</code>, <code>league</code>, <code>canonical_name</code>, <code>status</code></td>
+          </tr>
+          <tr>
+            <td><code>source_team</code></td>
+            <td>各数据源里的原始球队</td>
+            <td><code>source</code>, <code>source_team_id</code>, <code>source_team_name</code>, <code>normalized_name</code>, <code>first_seen_at</code>, <code>last_seen_at</code></td>
+          </tr>
+          <tr>
+            <td><code>team_mapping</code></td>
+            <td>源方球队到我们球队 ID 的映射</td>
+            <td><code>our_team_id</code>, <code>source</code>, <code>source_team_id</code>, <code>confidence</code>, <code>match_method</code>, <code>status</code></td>
+          </tr>
+          <tr>
+            <td><code>team_alias</code></td>
+            <td>确认过的别名沉淀，提升后续自动命中率</td>
+            <td><code>our_team_id</code>, <code>alias_name</code>, <code>normalized_alias</code>, <code>source</code></td>
+          </tr>
+          <tr>
+            <td><code>team_match_candidate</code></td>
+            <td>候选匹配和人工审核队列</td>
+            <td><code>source_team_key</code>, <code>candidate_our_team_id</code>, <code>score</code>, <code>reason</code>, <code>review_status</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>方案对比</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>维度</th>
+            <th>方案一：规则</th>
+            <th>方案二：向量召回</th>
+            <th>方案三：LLM 辅助</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>落地速度</td>
+            <td>最快</td>
+            <td>中等</td>
+            <td>中等偏慢</td>
+          </tr>
+          <tr>
+            <td>跨语言/简称能力</td>
+            <td>一般</td>
+            <td>强</td>
+            <td>强，尤其适合疑难样本</td>
+          </tr>
+          <tr>
+            <td>可解释性</td>
+            <td>强</td>
+            <td>中等，需要组合打分解释</td>
+            <td>强，但需要限制输入候选</td>
+          </tr>
+          <tr>
+            <td>运行成本</td>
+            <td>低</td>
+            <td>中</td>
+            <td>高，建议只跑低置信度样本</td>
+          </tr>
+          <tr>
+            <td>推荐程度</td>
+            <td>第一阶段可用</td>
+            <td>主推荐</td>
+            <td>作为增强模块</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>推荐落地顺序</h2>
+      <div class="panel">
+        <ol>
+          <li>先从 thesports、sr、ls 抽取唯一球队，形成 <code>source_team</code>。</li>
+          <li>建立 <code>our_team</code>、<code>team_mapping</code>、<code>team_alias</code> 基础表。</li>
+          <li>先跑规则匹配，产出第一批自动确认和待审核候选。</li>
+          <li>人工确认第一批映射，把确认结果沉淀为 alias。</li>
+          <li>加入向量召回，提升简称、多语言和不规则名称的召回率。</li>
+          <li>bc 数据源接入时，只新增 source 抽取逻辑，不改变主模型。</li>
+          <li>低置信度和冲突样本再引入 LLM 辅助判断。</li>
+        </ol>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

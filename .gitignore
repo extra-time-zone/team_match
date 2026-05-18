@@ -1,0 +1,6 @@
+.env.llm
+.env.docker
+.env.market
+outputs/
+__pycache__/
+*.pyc

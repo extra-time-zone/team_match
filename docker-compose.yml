@@ -1,0 +1,11 @@
+services:
+  team-mapper:
+    build: .
+    env_file:
+      - path: .env.docker
+        required: false
+    volumes:
+      - ./outputs:/app/outputs
+      - ./schema:/app/schema:ro
+      - ${MARKET_SSH_KEY_HOST_PATH:-./missing_ssh_key}:/run/secrets/market_ssh_key:ro
+    working_dir: /app

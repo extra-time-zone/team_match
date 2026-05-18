@@ -1,0 +1,789 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>球队映射工具链实现状态</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --paper: #ffffff;
+      --ink: #1f2933;
+      --muted: #5f6b7a;
+      --line: #d8dee6;
+      --blue: #1f6feb;
+      --green: #13795b;
+      --amber: #a16207;
+      --red: #b42318;
+      --code: #eef2f6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      line-height: 1.58;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 34px 0 56px;
+    }
+
+    header {
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 34px 0 14px;
+      font-size: 24px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      background: var(--code);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 12px 0 0;
+      padding: 14px;
+      overflow: auto;
+      background: #17202a;
+      color: #e8edf3;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    .lead {
+      max-width: 900px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 16px;
+    }
+
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    .panel.blue {
+      border-left: 5px solid var(--blue);
+    }
+
+    .panel.green {
+      border-left: 5px solid var(--green);
+    }
+
+    .panel.amber {
+      border-left: 5px solid var(--amber);
+    }
+
+    .panel.red {
+      border-left: 5px solid var(--red);
+    }
+
+    ul,
+    ol {
+      margin: 10px 0 0;
+      padding-left: 20px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th,
+    td {
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #eef3f8;
+      font-size: 14px;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 90px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      text-align: center;
+      font-size: 13px;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 980px) {
+      main {
+        width: min(100% - 24px, 760px);
+        padding-top: 22px;
+      }
+
+      .grid,
+      .two-col,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>球队映射工具链实现状态</h1>
+      <p class="lead">
+        当前项目已经实现跨数据源球队映射候选生成、比赛证据聚合、我们自己的球队 proposal 生成，以及 DeepSeek/OpenAI-compatible LLM 复核。
+        所有脚本默认只读远程 MySQL，只写本地 <code>outputs/</code> 文件，不会修改远程数据库。
+      </p>
+      <div class="tag-row">
+        <span class="tag">thesports</span>
+        <span class="tag">sr</span>
+        <span class="tag">ls</span>
+        <span class="tag">event evidence</span>
+        <span class="tag">our_team proposal</span>
+        <span class="tag">LLM verification</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>当前定位</h2>
+      <div class="two-col">
+        <div class="panel green">
+          <h3>已经做到</h3>
+          <ul>
+            <li>从多个数据源抽取比赛、球队、比分和时间字段。</li>
+            <li>三源一起跑，自动生成跨源比赛候选。</li>
+            <li>通过同一场比赛的主客队关系反推出球队映射。</li>
+            <li>聚合 source team，生成我们自己的 <code>our_team</code> 草稿 ID。</li>
+            <li>使用 DeepSeek / OpenAI-compatible API 对 proposal 做二次复核。</li>
+          </ul>
+        </div>
+        <div class="panel amber">
+          <h3>还不是最终 confirmed</h3>
+          <ul>
+            <li>当前输出是高质量 seed candidate，不直接写正式映射表。</li>
+            <li>多数样本还是两源、单场比赛证据。</li>
+            <li>下一阶段应使用已确认球队作为 anchor，查更多比赛并扩散验证对手。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>数据源</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>MySQL</th>
+            <th>主表</th>
+            <th>球队字段</th>
+            <th>补充表</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>thesports_fb</code></td>
+            <td><code>test1</code></td>
+            <td><code>test-thesports-db.ts_fb_match</code></td>
+            <td><code>home_team_id</code>, <code>away_team_id</code></td>
+            <td><code>ts_fb_team</code>, <code>ts_fb_match_score</code>, <code>ts_fb_competition</code></td>
+          </tr>
+          <tr>
+            <td><code>thesports_bb</code></td>
+            <td><code>test1</code></td>
+            <td><code>test-thesports-db.ts_bb_match</code></td>
+            <td><code>home_team_id</code>, <code>away_team_id</code></td>
+            <td><code>ts_bb_team</code>, <code>ts_bb_match_score</code>, <code>ts_bb_competition</code></td>
+          </tr>
+          <tr>
+            <td><code>sr</code></td>
+            <td><code>test</code></td>
+            <td><code>test2-sportdata-syncer.sr_sport_event</code></td>
+            <td><code>home_competitor_id</code>, <code>away_competitor_id</code></td>
+            <td><code>sr_competitor_en</code>, <code>sr_tournament_en</code>, <code>sr_sport_en</code></td>
+          </tr>
+          <tr>
+            <td><code>ls</code></td>
+            <td><code>test</code></td>
+            <td><code>test1-lsports-db.ls_sport_event</code></td>
+            <td><code>home_competitor_id</code>, <code>away_competitor_id</code></td>
+            <td><code>ls_competitor_en</code>, <code>ls_tournament_en</code>, <code>ls_sport_en</code></td>
+          </tr>
+          <tr>
+            <td><code>bc</code></td>
+            <td><code>test1</code></td>
+            <td><code>test1-bcsports-db.bc_sport_event</code></td>
+            <td>后续接入</td>
+            <td>当前表尚未存在</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>实现流程</h2>
+      <div class="panel">
+        <div class="flow">
+          <div class="step">读取多源比赛</div>
+          <div class="step">统一成 EventRecord</div>
+          <div class="step">跨源同场比赛候选</div>
+          <div class="step">事件证据打分</div>
+          <div class="step">从主客队反推球队 pair</div>
+          <div class="step">Union-Find 聚合 our_team</div>
+          <div class="step">LLM 复核 proposal</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>核心脚本</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>脚本</th>
+            <th>用途</th>
+            <th>是否写远程库</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>db_connection_test.py</code></td>
+            <td>测试 SSH tunnel 和 MySQL 连通性。</td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>team_mapping_core.py</code></td>
+            <td>公共模块：连库、抽取事件、名称标准化、候选打分、写 JSON/HTML。</td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>generate_team_candidates.py</code></td>
+            <td>两源候选生成脚本，适合调试单组 source。</td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>judge_team_candidates.py</code></td>
+            <td>对 event candidate 做 LLM 判断。</td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>run_team_mapping_pipeline.py</code></td>
+            <td>总控脚本：三源抽取、两两比赛匹配、球队 pair 反推、proposal 生成。</td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>run_confirmed_pipeline.py</code></td>
+            <td>服务器版总控：跑匹配、LLM 复核，并按规则 confirmed 落库到 <code>test1.team_mapping</code>。</td>
+            <td>只写 mapping DB</td>
+          </tr>
+          <tr>
+            <td><code>verify_team_proposals.py</code></td>
+            <td>对生成的 our_team proposal 做 LLM 复核，输出验证 CSV/JSONL。</td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>inspect_our_team.py</code></td>
+            <td>查询本地 our_team proposal，展示 source mappings、指标、证据和 LLM 复核结果。</td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>team_mapping_schema.sql</code></td>
+            <td>未来落库表结构草案，目前只是本地设计稿。</td>
+            <td>未执行</td>
+          </tr>
+          <tr>
+            <td><code>schema/team_mapping_schema.sql</code></td>
+            <td>正式长表 schema，包含 <code>our_team</code>、<code>source_team_mapping</code>、<code>team_mapping_evidence</code> 等。</td>
+            <td>执行后建库建表</td>
+          </tr>
+          <tr>
+            <td><code>Dockerfile</code> / <code>docker-compose.yml</code></td>
+            <td>服务器部署入口，镜像内安装 Python、依赖和 OpenSSH client。</td>
+            <td>取决于运行命令</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>当前产物</h2>
+      <div class="grid">
+        <div class="panel blue">
+          <h3>事件与候选</h3>
+          <ul>
+            <li><code>*.events.json</code>：统一抽取后的比赛数据。</li>
+            <li><code>*.candidates.jsonl</code>：跨源比赛候选。</li>
+            <li><code>*.candidates.review.html</code>：候选浏览页面。</li>
+          </ul>
+        </div>
+        <div class="panel green">
+          <h3>球队提案</h3>
+          <ul>
+            <li><code>*.our_team_proposals.json</code>：我们自己的球队聚类草稿。</li>
+            <li><code>*.team_mapping_proposals.csv</code>：映射提案 CSV。</li>
+          </ul>
+        </div>
+        <div class="panel amber">
+          <h3>LLM 复核</h3>
+          <ul>
+            <li><code>*.llm_verifications.jsonl</code>：逐条 LLM 复核详情。</li>
+            <li><code>*.llm_verifications.csv</code>：便于查看的复核表。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>已跑样例</h2>
+      <div class="panel">
+        <h3>高事件分 100 个 proposal</h3>
+        <p>时间范围：<code>2026-04-01</code> 到 <code>2026-05-15</code>。事件分阈值：<code>0.95</code>。</p>
+        <pre><code>proposal_count=100
+llm_verified=100
+needs_review=0
+reject=0
+llm_confidence_avg=0.949</code></pre>
+        <p class="small">
+          这批结果适合作为 seed candidate。由于多数还是两源、单场比赛证据，不建议直接当最终 confirmed。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>常用命令</h2>
+      <div class="grid">
+        <div class="panel">
+          <h3>1. 连库测试</h3>
+          <pre><code>python3 db_connection_test.py --env-file .env.market</code></pre>
+          <p class="small">测试 <code>test</code> 原 MySQL。</p>
+          <pre><code>python3 db_connection_test.py \
+  --env-file .env.market \
+  --mysql-host test-db.cluster-cdgqiwig2x00.us-west-2.rds.amazonaws.com \
+  --mysql-user root \
+  --prompt-mysql-password \
+  --mysql-db ''</code></pre>
+          <p class="small">测试 <code>test1</code> 新 RDS。</p>
+        </div>
+        <div class="panel">
+          <h3>2. 两源候选调试</h3>
+          <pre><code>python3 generate_team_candidates.py \
+  --source thesports_fb \
+  --target sr \
+  --sport football \
+  --start '2026-05-14 00:00:00' \
+  --end '2026-05-15 00:00:00' \
+  --per-source-limit 50 \
+  --top-k 3 \
+  --prompt-test1-password</code></pre>
+          <p class="small">适合调试某两个 source 的匹配情况。</p>
+        </div>
+        <div class="panel">
+          <h3>3. 生成三源 proposal</h3>
+          <pre><code>python3 run_team_mapping_pipeline.py \
+  --sport football \
+  --start '2026-04-01 00:00:00' \
+  --end '2026-05-15 00:00:00' \
+  --per-source-limit 5000 \
+  --top-k 3 \
+  --llm-provider none \
+  --proposal-method evidence \
+  --evidence-min-score 0.95 \
+  --max-proposals 100 \
+  --prompt-test1-password</code></pre>
+          <p class="small">三源一起跑：<code>thesports_fb + sr + ls</code>。</p>
+        </div>
+        <div class="panel">
+          <h3>4. LLM 复核 proposal</h3>
+          <pre><code>python3 verify_team_proposals.py \
+  --provider deepseek \
+  --model deepseek-v4-flash \
+  --input outputs/high_score_100_football_2026-04-01_2026-05-15.our_team_proposals.json \
+  --limit 100 \
+  --timeout 30 \
+  --retries 1</code></pre>
+          <p class="small">读取 proposal JSON，输出 <code>llm_verifications.csv/jsonl</code>。</p>
+        </div>
+        <div class="panel">
+          <h3>5. 查询单个 our_team</h3>
+          <pre><code>python3 inspect_our_team.py \
+  --our-team-id proposal-football-000003</code></pre>
+          <p class="small">按 proposal id 查询。</p>
+          <pre><code>python3 inspect_our_team.py \
+  --our-team-id 'Colo Colo'</code></pre>
+          <p class="small">按名称查询，只有匹配到唯一 proposal 时返回。</p>
+        </div>
+        <div class="panel">
+          <h3>6. JSON 输出</h3>
+          <pre><code>python3 inspect_our_team.py \
+  --our-team-id proposal-football-000003 \
+  --format json</code></pre>
+          <p class="small">适合后续接服务、页面或其他脚本。</p>
+        </div>
+        <div class="panel">
+          <h3>7. 指定其他结果文件</h3>
+          <pre><code>python3 inspect_our_team.py \
+  --our-team-id proposal-football-000001 \
+  --proposals outputs/xxx.our_team_proposals.json \
+  --verifications outputs/xxx.llm_verifications.jsonl</code></pre>
+          <p class="small">用于查看不同时间范围或不同参数跑出的结果。</p>
+        </div>
+        <div class="panel">
+          <h3>8. DeepSeek 配置</h3>
+          <pre><code>cp .env.llm.example .env.llm</code></pre>
+          <pre><code>DEEPSEEK_API_KEY=your_deepseek_key
+DEEPSEEK_MODEL=deepseek-v4-pro
+LLM_PROVIDER=deepseek</code></pre>
+          <p class="small"><code>.env.llm</code> 已被 <code>.gitignore</code> 忽略，不要提交真实 key。</p>
+        </div>
+        <div class="panel">
+          <h3>9. Docker 配置</h3>
+          <pre><code>cp .env.docker.example .env.docker</code></pre>
+          <p class="small">编辑 <code>.env.docker</code>，填入 SSH key 路径、test/test1 MySQL 密码、DeepSeek key。</p>
+          <pre><code>docker compose build</code></pre>
+        </div>
+        <div class="panel">
+          <h3>10. Docker dry-run</h3>
+          <pre><code>docker compose run --rm team-mapper \
+  python3 run_confirmed_pipeline.py \
+  --sport football \
+  --start '2026-04-01 00:00:00' \
+  --end '2026-05-15 00:00:00' \
+  --init-schema \
+  --dry-run</code></pre>
+          <p class="small">先检查环境和 schema 初始化；<code>--dry-run</code> 不会写 confirmed 映射。</p>
+        </div>
+        <div class="panel">
+          <h3>11. confirmed 落库</h3>
+          <pre><code>docker compose run --rm team-mapper \
+  python3 run_confirmed_pipeline.py \
+  --sport football \
+  --start '2026-04-01 00:00:00' \
+  --end '2026-05-15 00:00:00' \
+  --per-source-limit 5000 \
+  --evidence-min-score 0.95 \
+  --max-proposals 100 \
+  --init-schema</code></pre>
+          <p class="small">
+            满足 <code>llm_verified</code>、<code>llm_confidence &gt;= 0.90</code>、无冲突、
+            <code>avg_event_score &gt;= 0.95</code> 的 proposal 会写入 <code>test1.team_mapping</code>。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>LLM 做了什么</h2>
+      <div class="panel">
+        <p>
+          LLM 不直接访问数据库，也不自由写 SQL。程序先把 proposal、source team 和事件证据整理成结构化 JSON，
+          LLM 只负责判断这些 source team 是否代表同一支真实球队。
+        </p>
+        <pre><code>{
+  "same_team": true,
+  "confidence": 0.95,
+  "recommended_status": "llm_verified",
+  "risk_flags": [],
+  "reason": "Names and event evidence match with no youth/women/reserve conflict."
+}</code></pre>
+        <p class="small">
+          LLM verified 是复核通过，不等于正式 confirmed。正式 confirmed 仍建议依赖多场、多源、anchor 扩散验证。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>准确度指标</h2>
+      <div class="panel">
+        <p>
+          当前没有把某一个分数直接当作最终准确率。球队映射准确度由多项指标共同判断：
+          <code>conflict_count</code>、<code>source_count</code>、<code>evidence_count</code>、
+          <code>team_confidence</code>、<code>avg_event_score</code> 和 LLM 复核结果。
+        </p>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>指标</th>
+            <th>含义</th>
+            <th>怎么计算/判断</th>
+            <th>使用建议</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>conflict_count</code></td>
+            <td>当前 proposal 中发现的明显冲突数量。</td>
+            <td>
+              来自 evidence 中的冲突信号，例如比分明确不一致、主客方向冲突、同一 proposal 混入同源多个 team_id、
+              U19/U21/Women/Reserve 等层级不一致。
+            </td>
+            <td>
+              最关键指标。<code>conflict_count = 0</code> 才能进入高置信候选；
+              <code>conflict_count &gt; 0</code> 必须人工或更多证据复核。
+            </td>
+          </tr>
+          <tr>
+            <td><code>source_count</code></td>
+            <td>有多少个数据源支持同一个球队 proposal。</td>
+            <td>
+              统计 proposal members 里不同 <code>source</code> 的数量，例如 <code>sr + ls + thesports</code> 为 3。
+            </td>
+            <td>
+              <code>source_count = 3/4</code> 明显强于 <code>source_count = 2</code>。
+              后续接入 bc 后，四源支持的 proposal 应优先自动确认。
+            </td>
+          </tr>
+          <tr>
+            <td><code>evidence_count</code></td>
+            <td>有多少条比赛证据支持这个球队映射。</td>
+            <td>
+              每条 evidence 通常来自一次跨源同场比赛匹配，并由该比赛的主客队关系反推出球队 pair。
+            </td>
+            <td>
+              <code>evidence_count = 1</code> 是单场证据，只适合作为 seed candidate。
+              <code>evidence_count &gt;= 3</code> 且无冲突，更适合进入 high confidence。
+            </td>
+          </tr>
+          <tr>
+            <td><code>avg_event_score</code></td>
+            <td>支持该 proposal 的比赛候选平均分。</td>
+            <td>
+              单场 <code>event_score</code> 综合时间差、队名相似度、主客方向、比分一致性、赛事名相似度。
+              proposal 级别取这些 event score 的平均值。
+            </td>
+            <td>
+              它是比赛匹配质量，不是球队最终准确率。
+              <code>avg_event_score = 1.0</code> 但 <code>evidence_count = 1</code> 时仍不能直接 confirmed。
+            </td>
+          </tr>
+          <tr>
+            <td><code>team_confidence</code></td>
+            <td>当前脚本聚合出的球队 proposal 综合分。</td>
+            <td>
+              初版公式：
+              <code>avg_event_score * 0.50 + source_score * 0.30 + evidence_score * 0.20 - conflict_penalty</code>。
+              其中 <code>source_score</code> 来自 source 数量，<code>evidence_score</code> 来自 evidence 数量。
+            </td>
+            <td>
+              用于排序和筛选优先级，不等于真实准确率。
+              当前更适合判断“哪个 proposal 值得优先审核”。
+            </td>
+          </tr>
+          <tr>
+            <td><code>llm_status</code></td>
+            <td>LLM 对 proposal 的复核状态。</td>
+            <td>
+              <code>verify_team_proposals.py</code> 把 members 和 evidence 发给 LLM，
+              LLM 返回 <code>llm_verified</code>、<code>needs_review</code> 或 <code>reject</code>。
+            </td>
+            <td>
+              <code>llm_verified</code> 是二次审核通过，但不是最终 confirmed。
+              如果 LLM 给出 <code>risk_flags</code>，应继续查更多比赛证据。
+            </td>
+          </tr>
+          <tr>
+            <td><code>llm_confidence</code></td>
+            <td>LLM 自己给出的判断置信度。</td>
+            <td>
+              由 LLM 根据名称、语言、球队层级、比赛证据和风险点输出。
+            </td>
+            <td>
+              辅助指标。不能单独用来确认映射，尤其不能替代多场、多源证据。
+            </td>
+          </tr>
+          <tr>
+            <td><code>risk_flags</code></td>
+            <td>LLM 或规则发现的风险标签。</td>
+            <td>
+              常见标签包括 <code>youth_level_mismatch</code>、<code>women_team_risk</code>、
+              <code>reserve_team_risk</code>、<code>abbreviation_only</code>、<code>insufficient_event_evidence</code>。
+            </td>
+            <td>
+              只要存在风险标签，就不建议自动 confirmed。
+              后续可以触发更多数据库查询或人工复核。
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>判断规则</h2>
+      <div class="grid">
+        <div class="panel green">
+          <h3>可作为 Seed Candidate</h3>
+          <ul>
+            <li><code>conflict_count = 0</code></li>
+            <li><code>avg_event_score &gt;= 0.95</code></li>
+            <li><code>llm_status = llm_verified</code></li>
+            <li>通常仍可能只有 <code>source_count = 2</code>、<code>evidence_count = 1</code></li>
+          </ul>
+        </div>
+        <div class="panel blue">
+          <h3>高置信候选</h3>
+          <ul>
+            <li><code>conflict_count = 0</code></li>
+            <li><code>source_count &gt;= 3</code> 或 <code>evidence_count &gt;= 3</code></li>
+            <li><code>team_confidence &gt;= 0.85</code></li>
+            <li><code>llm_status = llm_verified</code> 且无 <code>risk_flags</code></li>
+          </ul>
+        </div>
+        <div class="panel amber">
+          <h3>需要更多证据</h3>
+          <ul>
+            <li><code>source_count = 2</code> 且 <code>evidence_count = 1</code></li>
+            <li>有缩写、翻译、青年队、女队、预备队风险。</li>
+            <li>LLM 返回 <code>needs_review</code> 或存在 <code>risk_flags</code>。</li>
+            <li>应通过 anchor propagation 查询更多对战比赛。</li>
+          </ul>
+        </div>
+      </div>
+      <div class="panel red" style="margin-top: 16px;">
+        <h3>不能自动确认</h3>
+        <ul>
+          <li><code>conflict_count &gt; 0</code></li>
+          <li>同一个 proposal 混入同源多个互斥 team_id。</li>
+          <li>U19/U21/Women/Reserve 与 senior team 无法解释地混用。</li>
+          <li>LLM 返回 <code>reject</code>。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>准确度判断公式</h2>
+      <div class="panel">
+        <p>当前脚本里的 <code>team_confidence</code> 是初版排序分，不是最终业务准确率：</p>
+        <pre><code>team_confidence =
+  avg_event_score * 0.50
+  + source_score * 0.30
+  + evidence_score * 0.20
+  - conflict_penalty
+
+source_score = min(source_count, 4) / 4
+evidence_score = min(evidence_count, 6) / 6
+conflict_penalty = min(conflict_count * 0.18, 0.54)</code></pre>
+        <p class="small">
+          后续 anchor propagation 完成后，应把 <code>anchor_team_count</code>、<code>opponent_consistency</code>、
+          <code>matched_event_count</code>、<code>source_event_count</code> 加入公式，让它更接近真实业务准确度。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>下一步</h2>
+      <div class="panel green">
+        <h3>Anchor Propagation</h3>
+        <ol>
+          <li>从 LLM verified 的高质量候选中挑 seed confirmed team。</li>
+          <li>查询这些球队在各源里的更多比赛。</li>
+          <li>用已确认球队作为 anchor，对齐同一场比赛。</li>
+          <li>从同场比赛反推出对手球队映射。</li>
+          <li>累计多场、多源 evidence，形成真正的 <code>team_confidence</code>。</li>
+          <li>达到阈值后再进入正式 confirmed 映射。</li>
+        </ol>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
