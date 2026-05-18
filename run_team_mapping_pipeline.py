@@ -72,7 +72,12 @@ def parse_args():
     parser.add_argument("--test1-mysql-password", help="Password for named MySQL test1. Prefer --prompt-test1-password.")
     parser.add_argument("--prompt-test1-password", action="store_true", help="Prompt for test1 MySQL password.")
     parser.add_argument("--mysql-user", help="Override MySQL user.")
-    parser.add_argument("--per-source-limit", type=int, default=1000, help="Max events per source. Default: 1000")
+    parser.add_argument(
+        "--per-source-limit",
+        type=int,
+        default=0,
+        help="Max events per source. Use 0 for all events in the time range. Default: 0",
+    )
     parser.add_argument("--db-retries", type=int, default=3, help="DB/SSH fetch retries per source. Default: 3")
     parser.add_argument("--db-retry-sleep", type=float, default=3, help="Seconds between DB retries. Default: 3")
     parser.add_argument("--time-window-hours", type=float, default=24, help="Max kickoff time gap. Default: 24")

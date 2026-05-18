@@ -374,6 +374,7 @@ def fetch_events(conn, source, sport, start_ts, end_ts, limit):
 def fetch_thesports_football(conn, sport, start_ts, end_ts, limit):
     if sport != "football":
         return []
+    limit_clause, params = limit_sql(limit)
     sql = """
         SELECT
             m.match_id,
@@ -394,10 +395,9 @@ def fetch_thesports_football(conn, sport, start_ts, end_ts, limit):
         LEFT JOIN `test-thesports-db`.`ts_fb_competition` c ON c.competition_id = m.competition_id
         WHERE m.match_time >= %s AND m.match_time < %s
         ORDER BY m.match_time
-        LIMIT %s
-    """
+    """ + limit_clause
     with conn.cursor() as cur:
-        cur.execute(sql, (start_ts, end_ts, limit))
+        cur.execute(sql, (start_ts, end_ts, *params))
         return [
             EventRecord(
                 source="thesports",
@@ -423,6 +423,7 @@ def fetch_thesports_football(conn, sport, start_ts, end_ts, limit):
 def fetch_thesports_basketball(conn, sport, start_ts, end_ts, limit):
     if sport != "basketball":
         return []
+    limit_clause, params = limit_sql(limit)
     sql = """
         SELECT
             m.match_id,
@@ -445,10 +446,9 @@ def fetch_thesports_basketball(conn, sport, start_ts, end_ts, limit):
         LEFT JOIN `test-thesports-db`.`ts_bb_competition` c ON c.competition_id = m.competition_id
         WHERE m.match_time >= %s AND m.match_time < %s
         ORDER BY m.match_time
-        LIMIT %s
-    """
+    """ + limit_clause
     with conn.cursor() as cur:
-        cur.execute(sql, (start_ts, end_ts, limit))
+        cur.execute(sql, (start_ts, end_ts, *params))
         return [
             EventRecord(
                 source="thesports",
@@ -472,6 +472,7 @@ def fetch_thesports_basketball(conn, sport, start_ts, end_ts, limit):
 
 
 def fetch_sr(conn, sport, start_ts, end_ts, limit):
+    limit_clause, params = limit_sql(limit)
     sql = """
         SELECT
             e.sport_event_id,
@@ -496,13 +497,12 @@ def fetch_sr(conn, sport, start_ts, end_ts, limit):
         WHERE COALESCE(NULLIF(e.start_time, ''), e.scheduled) >= %s
             AND COALESCE(NULLIF(e.start_time, ''), e.scheduled) < %s
         ORDER BY COALESCE(NULLIF(e.start_time, ''), e.scheduled)
-        LIMIT %s
-    """
+    """ + limit_clause
     start_text = fmt_utc(start_ts).replace(" UTC", "")
     end_text = fmt_utc(end_ts).replace(" UTC", "")
     rows = []
     with conn.cursor() as cur:
-        cur.execute(sql, (start_text, end_text, limit))
+        cur.execute(sql, (start_text, end_text, *params))
         for row in cur.fetchall():
             if not sport_matches(sport, row["sport_id"], row["sport_name"]):
                 continue
@@ -530,6 +530,7 @@ def fetch_sr(conn, sport, start_ts, end_ts, limit):
 
 
 def fetch_ls(conn, sport, start_ts, end_ts, limit):
+    limit_clause, params = limit_sql(limit)
     sql = """
         SELECT
             e.event_id,
@@ -552,13 +553,12 @@ def fetch_ls(conn, sport, start_ts, end_ts, limit):
         LEFT JOIN `test1-lsports-db`.`ls_sport_en` sp ON sp.sport_id = e.sport_id
         WHERE e.scheduled >= %s AND e.scheduled < %s
         ORDER BY e.scheduled
-        LIMIT %s
-    """
+    """ + limit_clause
     start_text = fmt_utc(start_ts).replace(" UTC", "")
     end_text = fmt_utc(end_ts).replace(" UTC", "")
     rows = []
     with conn.cursor() as cur:
-        cur.execute(sql, (start_text, end_text, limit))
+        cur.execute(sql, (start_text, end_text, *params))
         for row in cur.fetchall():
             if not sport_matches(sport, row["sport_id"], row["sport_name"]):
                 continue
@@ -582,3 +582,9 @@ def fetch_ls(conn, sport, start_ts, end_ts, limit):
                 )
             )
     return rows
+
+
+def limit_sql(limit):
+    if limit is None or int(limit) <= 0:
+        return "", ()
+    return "\n        LIMIT %s", (int(limit),)

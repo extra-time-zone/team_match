@@ -253,6 +253,7 @@
           <ul>
             <li>从多个数据源抽取比赛、球队、比分和时间字段。</li>
             <li>三源一起跑，自动生成跨源比赛候选。</li>
+            <li>服务器 confirmed pipeline 会先把本次读取到的全部 source team/source event 入库，未匹配球队也保留底账。</li>
             <li>通过同一场比赛的主客队关系反推出球队映射。</li>
             <li>聚合 source team，生成我们自己的 <code>our_team</code> 草稿 ID。</li>
             <li>使用 DeepSeek / OpenAI-compatible API 对 proposal 做二次复核。</li>
@@ -394,7 +395,7 @@
           </tr>
           <tr>
             <td><code>schema/team_mapping_schema.sql</code></td>
-            <td>正式长表 schema，包含 <code>our_team</code>、<code>source_team_mapping</code>、<code>team_mapping_evidence</code> 等。</td>
+            <td>正式长表 schema，包含 <code>our_team</code>、<code>source_team_mapping</code>、<code>team_mapping_evidence</code>、<code>source_team_match_stats</code> 等。</td>
             <td>执行后建库建表</td>
           </tr>
           <tr>
@@ -484,14 +485,12 @@ llm_confidence_avg=0.949</code></pre>
   --sport football \
   --start '2026-04-01 00:00:00' \
   --end '2026-05-15 00:00:00' \
-  --per-source-limit 5000 \
   --top-k 3 \
   --llm-provider none \
   --proposal-method evidence \
   --evidence-min-score 0.95 \
-  --max-proposals 100 \
   --prompt-test1-password</code></pre>
-          <p class="small">三源一起跑：<code>thesports_fb + sr + ls</code>。</p>
+          <p class="small">三源一起跑：<code>thesports_fb + sr + ls</code>。不传 <code>--per-source-limit</code> 和 <code>--max-proposals</code> 时，默认跑时间范围内全量。</p>
         </div>
         <div class="panel">
           <h3>4. LLM 复核 proposal</h3>
@@ -560,13 +559,12 @@ LLM_PROVIDER=deepseek</code></pre>
   --sport football \
   --start '2026-04-01 00:00:00' \
   --end '2026-05-15 00:00:00' \
-  --per-source-limit 5000 \
   --evidence-min-score 0.95 \
-  --max-proposals 100 \
   --init-schema</code></pre>
           <p class="small">
             满足 <code>llm_verified</code>、<code>llm_confidence &gt;= 0.90</code>、无冲突、
             <code>avg_event_score &gt;= 0.95</code> 的 proposal 会写入 <code>test1.team_mapping</code>。
+            默认会跑完时间范围内全部三源数据；如需抽样测试，再显式加 <code>--per-source-limit</code> 或 <code>--max-proposals</code>。
           </p>
         </div>
       </div>

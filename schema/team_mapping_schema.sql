@@ -173,3 +173,23 @@ CREATE TABLE IF NOT EXISTS team_alias (
     KEY idx_team_alias_lookup (sport, normalized_alias),
     CONSTRAINT fk_alias_our_team FOREIGN KEY (our_team_id) REFERENCES our_team(id)
 );
+
+CREATE TABLE IF NOT EXISTS source_team_match_stats (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    run_id BIGINT UNSIGNED NOT NULL,
+    source VARCHAR(32) NOT NULL,
+    sport VARCHAR(32) NOT NULL,
+    source_events_in_run INT NOT NULL DEFAULT 0,
+    source_teams_in_run INT NOT NULL DEFAULT 0,
+    total_source_teams INT NOT NULL DEFAULT 0,
+    mapped_source_teams INT NOT NULL DEFAULT 0,
+    unmapped_source_teams INT NOT NULL DEFAULT 0,
+    mapped_ratio DECIMAL(10,6) NOT NULL DEFAULT 0,
+    events_with_unmapped_team INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_source_team_match_stats_run_source (run_id, source, sport),
+    KEY idx_source_team_match_stats_source (source, sport, mapped_ratio),
+    CONSTRAINT fk_stats_pipeline_run FOREIGN KEY (run_id) REFERENCES pipeline_run(id)
+);

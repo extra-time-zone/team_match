@@ -32,12 +32,22 @@ def parse_args():
     parser.add_argument("--sources", help="Comma separated sources. Default from run_team_mapping_pipeline.")
     parser.add_argument("--start", required=True, help="Start time inclusive. Example: 2026-04-01 00:00:00")
     parser.add_argument("--end", required=True, help="End time exclusive. Example: 2026-05-15 00:00:00")
-    parser.add_argument("--per-source-limit", type=int, default=5000)
+    parser.add_argument(
+        "--per-source-limit",
+        type=int,
+        default=0,
+        help="Max events per source. Use 0 for all events in the time range. Default: 0",
+    )
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--min-score", type=float, default=0.55)
     parser.add_argument("--time-window-hours", type=float, default=24)
     parser.add_argument("--evidence-min-score", type=float, default=0.95)
-    parser.add_argument("--max-proposals", type=int, default=100)
+    parser.add_argument(
+        "--max-proposals",
+        type=int,
+        default=0,
+        help="Max proposals to verify/write. Use 0 for all proposals. Default: 0",
+    )
     parser.add_argument("--db-retries", type=int, default=3)
     parser.add_argument("--db-retry-sleep", type=float, default=3)
     parser.add_argument("--llm-provider", choices=("openai", "deepseek"), default=os.environ.get("LLM_PROVIDER", "deepseek"))
@@ -170,7 +180,7 @@ def make_pipeline_args(args):
         evidence_min_score=args.evidence_min_score,
         allow_score_conflict=False,
         min_proposal_evidence=1,
-        max_proposals=args.max_proposals,
+        max_proposals=args.max_proposals or None,
         accept_event_confidence=0.85,
         accept_team_confidence=0.85,
         output_dir="outputs",
@@ -263,11 +273,12 @@ def normalize_name(name):
     return core.normalize_name(name or "")
 
 
-def upsert_confirmed_rows(args, verification_rows, candidates):
+def upsert_confirmed_rows(args, events_by_source, verification_rows, candidates):
     conn, process = mapping_connection(args.mapping_db)
     try:
         with conn.cursor() as cur:
             run_id = create_pipeline_run(cur, args)
+            inventory_stats = upsert_source_inventory(cur, events_by_source)
             confirmed_count = 0
             for row in verification_rows:
                 status = "confirmed" if should_confirm(args, row) else "needs_review"
@@ -277,6 +288,7 @@ def upsert_confirmed_rows(args, verification_rows, candidates):
                 upsert_llm_verification(cur, our_team_id, row)
                 if status == "confirmed":
                     confirmed_count += 1
+            coverage_stats = compute_and_store_source_stats(cur, run_id, args.sport, inventory_stats)
             finish_pipeline_run(
                 cur,
                 run_id,
@@ -286,6 +298,8 @@ def upsert_confirmed_rows(args, verification_rows, candidates):
                     "confirmed": confirmed_count,
                     "needs_review": len(verification_rows) - confirmed_count,
                     "candidate_count": len(candidates),
+                    "inventory": inventory_stats,
+                    "coverage": coverage_stats,
                 },
             )
         conn.commit()
@@ -323,10 +337,231 @@ def finish_pipeline_run(cur, run_id, status, summary):
     )
 
 
+def upsert_source_inventory(cur, events_by_source):
+    stats = {}
+    for source, events in events_by_source.items():
+        source_team_ids = set()
+        for event in events:
+            upsert_source_event(cur, event)
+            for side in ("home", "away"):
+                team_id = getattr(event, f"{side}_team_id")
+                team_name = getattr(event, f"{side}_team_name")
+                if not team_id:
+                    continue
+                source_team_ids.add(team_id)
+                upsert_source_team(
+                    cur,
+                    event.source,
+                    event.sport,
+                    team_id,
+                    team_name,
+                    event.start_time,
+                    event.start_time,
+                )
+        stats[source] = {
+            "source_events": len(events),
+            "source_teams": len(source_team_ids),
+        }
+    return stats
+
+
+def upsert_source_event(cur, event):
+    cur.execute(
+        """
+        INSERT INTO source_event (
+            source, sport, source_event_id, start_time,
+            home_source_team_id, home_source_team_name,
+            away_source_team_id, away_source_team_name,
+            home_score, away_score, competition_id, competition_name, raw_payload
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            start_time=VALUES(start_time),
+            home_source_team_id=VALUES(home_source_team_id),
+            home_source_team_name=VALUES(home_source_team_name),
+            away_source_team_id=VALUES(away_source_team_id),
+            away_source_team_name=VALUES(away_source_team_name),
+            home_score=VALUES(home_score),
+            away_score=VALUES(away_score),
+            competition_id=VALUES(competition_id),
+            competition_name=VALUES(competition_name),
+            raw_payload=VALUES(raw_payload)
+        """,
+        (
+            event.source,
+            event.sport,
+            event.event_id,
+            event.start_time.replace(" UTC", "") if event.start_time else None,
+            event.home_team_id,
+            event.home_team_name,
+            event.away_team_id,
+            event.away_team_name,
+            event.home_score,
+            event.away_score,
+            event.competition_id,
+            event.competition_name,
+            json.dumps(
+                {
+                    "category_id": event.category_id,
+                    "raw_sport_id": event.raw_sport_id,
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+
+
+def upsert_source_team(cur, source, sport, source_team_id, source_team_name, first_seen_at=None, last_seen_at=None):
+    cur.execute(
+        """
+        INSERT INTO source_team (
+            source, sport, source_team_id, source_team_name, normalized_name,
+            first_seen_at, last_seen_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            source_team_name=VALUES(source_team_name),
+            normalized_name=VALUES(normalized_name),
+            first_seen_at=CASE
+                WHEN first_seen_at IS NULL THEN VALUES(first_seen_at)
+                WHEN VALUES(first_seen_at) IS NULL THEN first_seen_at
+                ELSE LEAST(first_seen_at, VALUES(first_seen_at))
+            END,
+            last_seen_at=CASE
+                WHEN last_seen_at IS NULL THEN VALUES(last_seen_at)
+                WHEN VALUES(last_seen_at) IS NULL THEN last_seen_at
+                ELSE GREATEST(last_seen_at, VALUES(last_seen_at))
+            END
+        """,
+        (
+            source,
+            sport,
+            source_team_id,
+            source_team_name or "",
+            normalize_name(source_team_name),
+            first_seen_at.replace(" UTC", "") if isinstance(first_seen_at, str) else first_seen_at,
+            last_seen_at.replace(" UTC", "") if isinstance(last_seen_at, str) else last_seen_at,
+        ),
+    )
+
+
+def compute_and_store_source_stats(cur, run_id, sport, inventory_stats):
+    coverage = {}
+    for source in sorted(inventory_stats):
+        cur.execute(
+            """
+            SELECT COUNT(*) AS total_source_teams
+            FROM source_team
+            WHERE source=%s AND sport=%s
+            """,
+            (source, sport),
+        )
+        total_source_teams = int(cur.fetchone()["total_source_teams"] or 0)
+        cur.execute(
+            """
+            SELECT COUNT(*) AS mapped_source_teams
+            FROM source_team_mapping
+            WHERE source=%s AND sport=%s AND status='confirmed'
+            """,
+            (source, sport),
+        )
+        mapped_source_teams = int(cur.fetchone()["mapped_source_teams"] or 0)
+        unmapped_source_teams = max(0, total_source_teams - mapped_source_teams)
+        mapped_ratio = round(mapped_source_teams / total_source_teams, 6) if total_source_teams else 0
+        cur.execute(
+            """
+            SELECT COUNT(*) AS events_with_unmapped_team
+            FROM source_event e
+            LEFT JOIN source_team_mapping hm
+                ON hm.source=e.source
+                AND hm.sport=e.sport
+                AND hm.source_team_id=e.home_source_team_id
+                AND hm.status='confirmed'
+            LEFT JOIN source_team_mapping am
+                ON am.source=e.source
+                AND am.sport=e.sport
+                AND am.source_team_id=e.away_source_team_id
+                AND am.status='confirmed'
+            WHERE e.source=%s
+                AND e.sport=%s
+                AND (hm.id IS NULL OR am.id IS NULL)
+            """,
+            (source, sport),
+        )
+        events_with_unmapped_team = int(cur.fetchone()["events_with_unmapped_team"] or 0)
+        row = {
+            "source_events_in_run": inventory_stats[source]["source_events"],
+            "source_teams_in_run": inventory_stats[source]["source_teams"],
+            "total_source_teams": total_source_teams,
+            "mapped_source_teams": mapped_source_teams,
+            "unmapped_source_teams": unmapped_source_teams,
+            "mapped_ratio": mapped_ratio,
+            "events_with_unmapped_team": events_with_unmapped_team,
+        }
+        coverage[source] = row
+        cur.execute(
+            """
+            INSERT INTO source_team_match_stats (
+                run_id, source, sport, source_events_in_run, source_teams_in_run,
+                total_source_teams, mapped_source_teams, unmapped_source_teams,
+                mapped_ratio, events_with_unmapped_team
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                source_events_in_run=VALUES(source_events_in_run),
+                source_teams_in_run=VALUES(source_teams_in_run),
+                total_source_teams=VALUES(total_source_teams),
+                mapped_source_teams=VALUES(mapped_source_teams),
+                unmapped_source_teams=VALUES(unmapped_source_teams),
+                mapped_ratio=VALUES(mapped_ratio),
+                events_with_unmapped_team=VALUES(events_with_unmapped_team)
+            """,
+            (
+                run_id,
+                source,
+                sport,
+                row["source_events_in_run"],
+                row["source_teams_in_run"],
+                row["total_source_teams"],
+                row["mapped_source_teams"],
+                row["unmapped_source_teams"],
+                row["mapped_ratio"],
+                row["events_with_unmapped_team"],
+            ),
+        )
+    return coverage
+
+
 def upsert_our_team(cur, row, status):
     proposal = row["proposal"]
     verification = row["llm_verification"]
     confidence = float(verification.get("confidence") or proposal.get("team_confidence") or 0)
+    existing_id = find_existing_our_team_id(cur, proposal)
+    if existing_id:
+        cur.execute(
+            """
+            UPDATE our_team
+            SET canonical_name=%s,
+                normalized_name=%s,
+                status=IF(status='confirmed' AND %s<>'confirmed', status, %s),
+                confidence=GREATEST(confidence, %s),
+                confirmed_method=IF(status='confirmed' AND %s<>'confirmed', confirmed_method, %s),
+                confirmed_at=IF(%s='confirmed', COALESCE(confirmed_at, NOW()), confirmed_at)
+            WHERE id=%s
+            """,
+            (
+                proposal["canonical_name"],
+                normalize_name(proposal["canonical_name"]),
+                status,
+                status,
+                confidence,
+                status,
+                "llm_verified_event_evidence" if status == "confirmed" else None,
+                status,
+                existing_id,
+            ),
+        )
+        return existing_id
     cur.execute(
         """
         INSERT INTO our_team (
@@ -348,29 +583,39 @@ def upsert_our_team(cur, row, status):
     return cur.lastrowid
 
 
+def find_existing_our_team_id(cur, proposal):
+    members = proposal.get("members") or []
+    if not members:
+        return None
+    placeholders = ", ".join(["(%s,%s,%s)"] * len(members))
+    params = []
+    for member in members:
+        params.extend([member["source"], member["sport"], member["source_team_id"]])
+    cur.execute(
+        f"""
+        SELECT our_team_id, COUNT(*) AS hit_count
+        FROM source_team_mapping
+        WHERE (source, sport, source_team_id) IN ({placeholders})
+        GROUP BY our_team_id
+        ORDER BY hit_count DESC, our_team_id
+        LIMIT 1
+        """,
+        params,
+    )
+    row = cur.fetchone()
+    return row["our_team_id"] if row else None
+
+
 def upsert_source_teams_and_mappings(cur, our_team_id, row, status):
     proposal = row["proposal"]
     confidence = float(row["llm_verification"].get("confidence") or 0)
     for member in proposal.get("members", []):
-        cur.execute(
-            """
-            INSERT INTO source_team (
-                source, sport, source_team_id, source_team_name, normalized_name,
-                first_seen_at, last_seen_at
-            )
-            VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
-            ON DUPLICATE KEY UPDATE
-                source_team_name=VALUES(source_team_name),
-                normalized_name=VALUES(normalized_name),
-                last_seen_at=NOW()
-            """,
-            (
-                member["source"],
-                member["sport"],
-                member["source_team_id"],
-                member["source_team_name"],
-                normalize_name(member["source_team_name"]),
-            ),
+        upsert_source_team(
+            cur,
+            member["source"],
+            member["sport"],
+            member["source_team_id"],
+            member["source_team_name"],
         )
         cur.execute(
             """
@@ -385,9 +630,9 @@ def upsert_source_teams_and_mappings(cur, our_team_id, row, status):
                 source_team_name=VALUES(source_team_name),
                 normalized_name=VALUES(normalized_name),
                 confidence=GREATEST(confidence, VALUES(confidence)),
-                status=VALUES(status),
+                status=IF(status='confirmed' AND VALUES(status)<>'confirmed', status, VALUES(status)),
                 evidence_count=GREATEST(evidence_count, VALUES(evidence_count)),
-                confirmed_method=VALUES(confirmed_method),
+                confirmed_method=IF(status='confirmed' AND VALUES(status)<>'confirmed', confirmed_method, VALUES(confirmed_method)),
                 confirmed_at=IF(VALUES(status)='confirmed', COALESCE(confirmed_at, NOW()), confirmed_at)
             """,
             (
@@ -519,7 +764,7 @@ def main():
     if args.dry_run:
         print("dry_run=true; not writing mapping DB")
         return
-    confirmed_count = upsert_confirmed_rows(args, verification_rows, candidates)
+    confirmed_count = upsert_confirmed_rows(args, events_by_source, verification_rows, candidates)
     print(f"confirmed_written={confirmed_count}")
 
 
