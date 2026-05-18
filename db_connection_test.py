@@ -54,10 +54,14 @@ def get_config(args):
     if not mysql_password:
         raise RuntimeError("Missing required MySQL password. Set MARKET_MYSQL_PASSWORD or use --prompt-mysql-password.")
 
+    direct_mysql = is_direct_mysql(args.mysql_host)
+
     return {
-        "ssh_host": require_env("MARKET_SSH_HOST"),
+        "ssh_host": os.environ.get("MARKET_SSH_HOST", "") if direct_mysql else require_env("MARKET_SSH_HOST"),
         "ssh_user": os.environ.get("MARKET_SSH_USER", "ubuntu"),
-        "ssh_key_path": str(Path(require_env("MARKET_SSH_KEY_PATH")).expanduser()),
+        "ssh_key_path": str(Path(os.environ.get("MARKET_SSH_KEY_PATH", "")).expanduser())
+        if direct_mysql
+        else str(Path(require_env("MARKET_SSH_KEY_PATH")).expanduser()),
         "mysql_host": args.mysql_host or require_env("MARKET_MYSQL_HOST"),
         "mysql_port": int(args.mysql_port or os.environ.get("MARKET_MYSQL_PORT", "3306")),
         "mysql_user": args.mysql_user or require_env("MARKET_MYSQL_USER"),
@@ -65,6 +69,14 @@ def get_config(args):
         "mysql_db": args.mysql_db if args.mysql_db is not None else os.environ.get("MARKET_MYSQL_DB", ""),
         "batch_mode": os.environ.get("MARKET_SSH_BATCH_MODE", "yes").lower() not in ("0", "false", "no"),
     }
+
+
+def is_direct_mysql(mysql_host=None):
+    if os.environ.get("MYSQL_DIRECT", "").lower() in ("1", "true", "yes", "y"):
+        return True
+    if mysql_host and os.environ.get("TEST1_MYSQL_DIRECT", "").lower() in ("1", "true", "yes", "y"):
+        return True
+    return os.environ.get("MARKET_MYSQL_DIRECT", "").lower() in ("1", "true", "yes", "y")
 
 
 def find_free_port():
