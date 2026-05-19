@@ -29,8 +29,8 @@ SOURCE_MYSQL = {
 }
 
 SPORT_ALIASES = {
-    "football": {"football", "soccer", "1", "sr:sport:1"},
-    "basketball": {"basketball", "2", "sr:sport:2"},
+    "football": {"football", "soccer", "1", "sr:sport:1", "6046"},
+    "basketball": {"basketball", "2", "sr:sport:2", "48242"},
 }
 
 STOP_WORDS = {
@@ -193,9 +193,24 @@ def similarity(a, b):
 
 
 def sport_matches(canonical_sport, raw_sport_id, sport_name=None):
-    accepted = SPORT_ALIASES.get(canonical_sport, {canonical_sport})
+    if canonical_sport == "all":
+        return True
+    accepted = sport_alias_values(canonical_sport)
     values = {str(raw_sport_id or "").casefold(), str(sport_name or "").casefold()}
     return bool(accepted & values) or not raw_sport_id
+
+
+def canonical_sport(raw_sport_id=None, sport_name=None, requested_sport=None):
+    if requested_sport and requested_sport != "all":
+        return requested_sport
+    values = {str(raw_sport_id or "").casefold(), str(sport_name or "").casefold()}
+    for sport, aliases in SPORT_ALIASES.items():
+        if values & aliases:
+            return sport
+    name = str(sport_name or raw_sport_id or "unknown").casefold()
+    name = re.sub(r"^sr:sport:", "", name)
+    name = re.sub(r"[^a-z0-9]+", "_", name).strip("_")
+    return name or "unknown"
 
 
 def sofa_search_url(event_a, event_b):
@@ -372,7 +387,7 @@ def fetch_events(conn, source, sport, start_ts, end_ts, limit):
 
 
 def fetch_thesports_football(conn, sport, start_ts, end_ts, limit):
-    if sport != "football":
+    if sport not in ("football", "all"):
         return []
     limit_clause, params = limit_sql(limit)
     sql = """
@@ -421,7 +436,7 @@ def fetch_thesports_football(conn, sport, start_ts, end_ts, limit):
 
 
 def fetch_thesports_basketball(conn, sport, start_ts, end_ts, limit):
-    if sport != "basketball":
+    if sport not in ("basketball", "all"):
         return []
     limit_clause, params = limit_sql(limit)
     sql = """
@@ -473,6 +488,7 @@ def fetch_thesports_basketball(conn, sport, start_ts, end_ts, limit):
 
 def fetch_sr(conn, sport, start_ts, end_ts, limit):
     limit_clause, params = limit_sql(limit)
+    sport_clause, sport_params = sport_sql_filter(sport)
     sql = """
         SELECT
             e.sport_event_id,
@@ -496,13 +512,14 @@ def fetch_sr(conn, sport, start_ts, end_ts, limit):
         LEFT JOIN `test2-sportdata-syncer`.`sr_sport_en` sp ON sp.sport_id = e.sport_id
         WHERE COALESCE(NULLIF(e.start_time, ''), e.scheduled) >= %s
             AND COALESCE(NULLIF(e.start_time, ''), e.scheduled) < %s
+            AND """ + sport_clause + """
         ORDER BY COALESCE(NULLIF(e.start_time, ''), e.scheduled)
     """ + limit_clause
     start_text = fmt_utc(start_ts).replace(" UTC", "")
     end_text = fmt_utc(end_ts).replace(" UTC", "")
     rows = []
     with conn.cursor() as cur:
-        cur.execute(sql, (start_text, end_text, *params))
+        cur.execute(sql, (start_text, end_text, *sport_params, *params))
         for row in cur.fetchall():
             if not sport_matches(sport, row["sport_id"], row["sport_name"]):
                 continue
@@ -510,7 +527,7 @@ def fetch_sr(conn, sport, start_ts, end_ts, limit):
             rows.append(
                 EventRecord(
                     source="sr",
-                    sport=sport,
+                    sport=canonical_sport(row["sport_id"], row["sport_name"], sport),
                     event_id=str(row["sport_event_id"]),
                     start_time=fmt_utc(parse_time(time_value)),
                     start_ts=parse_time(time_value),
@@ -531,6 +548,7 @@ def fetch_sr(conn, sport, start_ts, end_ts, limit):
 
 def fetch_ls(conn, sport, start_ts, end_ts, limit):
     limit_clause, params = limit_sql(limit)
+    sport_clause, sport_params = sport_sql_filter(sport)
     sql = """
         SELECT
             e.event_id,
@@ -552,20 +570,21 @@ def fetch_ls(conn, sport, start_ts, end_ts, limit):
         LEFT JOIN `test1-lsports-db`.`ls_tournament_en` t ON CAST(t.tournament_id AS CHAR) = e.tournament_id
         LEFT JOIN `test1-lsports-db`.`ls_sport_en` sp ON sp.sport_id = e.sport_id
         WHERE e.scheduled >= %s AND e.scheduled < %s
+            AND """ + sport_clause + """
         ORDER BY e.scheduled
     """ + limit_clause
     start_text = fmt_utc(start_ts).replace(" UTC", "")
     end_text = fmt_utc(end_ts).replace(" UTC", "")
     rows = []
     with conn.cursor() as cur:
-        cur.execute(sql, (start_text, end_text, *params))
+        cur.execute(sql, (start_text, end_text, *sport_params, *params))
         for row in cur.fetchall():
             if not sport_matches(sport, row["sport_id"], row["sport_name"]):
                 continue
             rows.append(
                 EventRecord(
                     source="ls",
-                    sport=sport,
+                    sport=canonical_sport(row["sport_id"], row["sport_name"], sport),
                     event_id=str(row["event_id"]),
                     start_time=fmt_utc(parse_time(row["scheduled"])),
                     start_ts=parse_time(row["scheduled"]),
@@ -588,3 +607,21 @@ def limit_sql(limit):
     if limit is None or int(limit) <= 0:
         return "", ()
     return "\n        LIMIT %s", (int(limit),)
+
+
+def sport_sql_filter(sport):
+    if sport == "all":
+        return "1=1", ()
+    accepted = sorted(sport_alias_values(sport))
+    placeholders = ", ".join(["%s"] * len(accepted))
+    return (
+        f"(LOWER(CAST(e.sport_id AS CHAR)) IN ({placeholders}) "
+        f"OR LOWER(COALESCE(sp.name, '')) IN ({placeholders}))",
+        tuple(accepted + accepted),
+    )
+
+
+def sport_alias_values(sport):
+    values = set(SPORT_ALIASES.get(sport, {sport}))
+    values.add(str(sport or "").replace("_", " ").casefold())
+    return {value.casefold() for value in values if value}

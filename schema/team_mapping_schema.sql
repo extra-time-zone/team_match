@@ -193,3 +193,94 @@ CREATE TABLE IF NOT EXISTS source_team_match_stats (
     KEY idx_source_team_match_stats_source (source, sport, mapped_ratio),
     CONSTRAINT fk_stats_pipeline_run FOREIGN KEY (run_id) REFERENCES pipeline_run(id)
 );
+
+CREATE OR REPLACE VIEW v_source_team_status AS
+SELECT
+    st.id AS source_team_row_id,
+    st.source,
+    st.sport,
+    st.source_team_id,
+    st.source_team_name,
+    st.normalized_name,
+    st.first_seen_at,
+    st.last_seen_at,
+    stm.our_team_id,
+    stm.confidence AS mapping_confidence,
+    stm.evidence_count,
+    CASE
+        WHEN stm.status = 'confirmed' THEN 'mapped'
+        WHEN stm.status IN ('seed_candidate', 'needs_review') THEN 'pending_more_sources'
+        WHEN stm.status IN ('rejected', 'inactive') THEN stm.status
+        ELSE 'unmatched'
+    END AS source_team_status,
+    stm.status AS mapping_status,
+    stm.confirmed_method,
+    stm.confirmed_at
+FROM source_team st
+LEFT JOIN source_team_mapping stm
+    ON stm.source = st.source
+    AND stm.sport = st.sport
+    AND stm.source_team_id = st.source_team_id;
+
+CREATE OR REPLACE VIEW v_source_team_match_stats AS
+SELECT
+    id,
+    run_id,
+    source,
+    sport,
+    total_source_teams,
+    mapped_source_teams AS mapped_teams,
+    unmapped_source_teams AS unmatched_teams,
+    unmapped_source_teams AS single_source_active_teams,
+    events_with_unmapped_team,
+    mapped_ratio,
+    source_events_in_run,
+    source_teams_in_run,
+    created_at,
+    updated_at
+FROM source_team_match_stats;
+
+CREATE OR REPLACE VIEW v_our_team_source_mapping AS
+SELECT
+    ot.id AS our_team_id,
+    ot.sport,
+    ot.canonical_name,
+    ot.status AS our_team_status,
+    ot.confidence AS our_team_confidence,
+    GROUP_CONCAT(
+        CASE WHEN stm.source = 'thesports' THEN stm.source_team_id END
+        ORDER BY stm.source_team_id SEPARATOR ', '
+    ) AS thesports_team_ids,
+    GROUP_CONCAT(
+        CASE WHEN stm.source = 'thesports' THEN stm.source_team_name END
+        ORDER BY stm.source_team_name SEPARATOR ', '
+    ) AS thesports_team_names,
+    GROUP_CONCAT(
+        CASE WHEN stm.source = 'sr' THEN stm.source_team_id END
+        ORDER BY stm.source_team_id SEPARATOR ', '
+    ) AS sr_team_ids,
+    GROUP_CONCAT(
+        CASE WHEN stm.source = 'sr' THEN stm.source_team_name END
+        ORDER BY stm.source_team_name SEPARATOR ', '
+    ) AS sr_team_names,
+    GROUP_CONCAT(
+        CASE WHEN stm.source = 'ls' THEN stm.source_team_id END
+        ORDER BY stm.source_team_id SEPARATOR ', '
+    ) AS ls_team_ids,
+    GROUP_CONCAT(
+        CASE WHEN stm.source = 'ls' THEN stm.source_team_name END
+        ORDER BY stm.source_team_name SEPARATOR ', '
+    ) AS ls_team_names,
+    GROUP_CONCAT(
+        CASE WHEN stm.source = 'bc' THEN stm.source_team_id END
+        ORDER BY stm.source_team_id SEPARATOR ', '
+    ) AS bc_team_ids,
+    GROUP_CONCAT(
+        CASE WHEN stm.source = 'bc' THEN stm.source_team_name END
+        ORDER BY stm.source_team_name SEPARATOR ', '
+    ) AS bc_team_names,
+    COUNT(DISTINCT stm.source) AS mapped_source_count,
+    GROUP_CONCAT(DISTINCT stm.source ORDER BY stm.source SEPARATOR ',') AS mapped_sources
+FROM our_team ot
+LEFT JOIN source_team_mapping stm ON stm.our_team_id = ot.id
+GROUP BY ot.id, ot.sport, ot.canonical_name, ot.status, ot.confidence;

@@ -28,7 +28,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run confirmed team mapping pipeline.")
     parser.add_argument("--env-file", default=".env.market", help="Local env file fallback. Default: .env.market")
     parser.add_argument("--llm-env-file", default=".env.llm", help="Local LLM env file fallback. Default: .env.llm")
-    parser.add_argument("--sport", required=True, choices=("football", "basketball"))
+    parser.add_argument("--sport", required=True, help="Sport to process: football, basketball, all, or a canonical sport key.")
     parser.add_argument("--sources", help="Comma separated sources. Default from run_team_mapping_pipeline.")
     parser.add_argument("--start", required=True, help="Start time inclusive. Example: 2026-04-01 00:00:00")
     parser.add_argument("--end", required=True, help="End time exclusive. Example: 2026-05-15 00:00:00")
@@ -41,7 +41,18 @@ def parse_args():
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--min-score", type=float, default=0.55)
     parser.add_argument("--time-window-hours", type=float, default=24)
-    parser.add_argument("--evidence-min-score", type=float, default=0.95)
+    parser.add_argument(
+        "--review-evidence-min-score",
+        type=float,
+        default=0.85,
+        help="Minimum event score to persist a proposal as needs_review. Default: 0.85",
+    )
+    parser.add_argument(
+        "--evidence-min-score",
+        type=float,
+        default=0.95,
+        help="Minimum event score for a proposal to enter LLM confirmation. Default: 0.95",
+    )
     parser.add_argument(
         "--max-proposals",
         type=int,
@@ -177,7 +188,7 @@ def make_pipeline_args(args):
         llm_timeout=args.llm_timeout,
         llm_retries=args.llm_retries,
         proposal_method="evidence",
-        evidence_min_score=args.evidence_min_score,
+        evidence_min_score=args.review_evidence_min_score,
         allow_score_conflict=False,
         min_proposal_evidence=1,
         max_proposals=args.max_proposals or None,
@@ -256,6 +267,141 @@ def verify_proposals(args, proposals):
     return rows
 
 
+def verify_and_write_proposals(args, proposals, run_id):
+    client = None
+    model = None
+    counts = {
+        "verified": 0,
+        "llm_requested": 0,
+        "llm_skipped_low_score": 0,
+        "llm_skipped_existing": 0,
+        "llm_verified": 0,
+        "confirmed": 0,
+        "needs_review": 0,
+    }
+    for index, proposal in enumerate(proposals, 1):
+        skip_reason = llm_skip_reason(args, proposal)
+        if skip_reason:
+            result = skipped_llm_result(proposal, skip_reason)
+            counts[f"llm_skipped_{skip_reason}"] += 1
+            llm_provider = "skipped"
+            llm_model = "none"
+            skip_llm = True
+        else:
+            if client is None:
+                model, base_url, api_key = provider_config(
+                    SimpleNamespace(
+                        provider=args.llm_provider,
+                        model=args.model,
+                        base_url=args.base_url,
+                        api_key_env=args.api_key_env,
+                        dry_run=False,
+                    )
+                )
+                client = OpenAI(api_key=api_key, base_url=base_url, timeout=args.llm_timeout, max_retries=0)
+            result = None
+            last_error = None
+            for _ in range(args.llm_retries):
+                try:
+                    result = normalize_verification(verify_one(client, model, proposal))
+                    break
+                except Exception as exc:
+                    last_error = exc
+            if result is None:
+                result = {
+                    "same_team": False,
+                    "confidence": 0,
+                    "recommended_status": "needs_review",
+                    "risk_flags": ["llm_error"],
+                    "reason": f"LLM request failed: {last_error}",
+                }
+            counts["llm_requested"] += 1
+            llm_provider = args.llm_provider
+            llm_model = model
+            skip_llm = False
+        row = {
+            "run_id": run_id,
+            "proposal": proposal,
+            "llm_provider": llm_provider,
+            "llm_model": llm_model,
+            "llm_verification": result,
+            "skip_llm_verification": skip_llm,
+        }
+        status = upsert_single_verification_row(args, row)
+        counts["verified"] += 1
+        if result.get("recommended_status") == "llm_verified":
+            counts["llm_verified"] += 1
+        counts["confirmed" if status == "confirmed" else "needs_review"] += 1
+        print(
+            f"verified {index}/{len(proposals)} {proposal['proposed_our_team_id']} {proposal['canonical_name']} "
+            f"-> {result['recommended_status']} confidence={result['confidence']} written={status} "
+            f"llm={'skipped:' + skip_reason if skip_reason else 'requested'}"
+        )
+    return counts
+
+
+def llm_skip_reason(args, proposal):
+    if float(proposal.get("avg_event_score") or 0) < args.evidence_min_score:
+        return "low_score"
+    if proposal_already_confirmed(args, proposal):
+        return "existing"
+    return None
+
+
+def skipped_llm_result(proposal, reason):
+    if reason == "existing":
+        return {
+            "same_team": True,
+            "confidence": 1,
+            "recommended_status": "llm_verified",
+            "risk_flags": ["already_confirmed"],
+            "reason": "All proposal members are already confirmed to the same our_team_id; LLM skipped.",
+        }
+    return {
+        "same_team": None,
+        "confidence": float(proposal.get("team_confidence") or proposal.get("avg_event_score") or 0),
+        "recommended_status": "needs_review",
+        "risk_flags": ["below_llm_threshold"],
+        "reason": "Event score is below LLM confirmation threshold; saved for anchor propagation or manual review.",
+    }
+
+
+def proposal_already_confirmed(args, proposal):
+    members = proposal.get("members") or []
+    if not members:
+        return False
+    conn, process = mapping_connection(args.mapping_db)
+    try:
+        with conn.cursor() as cur:
+            placeholders = ", ".join(["(%s,%s,%s)"] * len(members))
+            params = []
+            for member in members:
+                params.extend([member["source"], member["sport"], member["source_team_id"]])
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS member_count, COUNT(DISTINCT our_team_id) AS our_team_count
+                FROM source_team_mapping
+                WHERE status='confirmed'
+                    AND (source, sport, source_team_id) IN ({placeholders})
+                """,
+                params,
+            )
+            row = cur.fetchone()
+            return int(row["member_count"] or 0) == len(members) and int(row["our_team_count"] or 0) == 1
+    finally:
+        close_mapping_connection(conn, process)
+
+
+def count_llm_plan(args, proposals):
+    counts = {"llm_would_request": 0, "needs_review_without_llm": 0}
+    for proposal in proposals:
+        if float(proposal.get("avg_event_score") or 0) < args.evidence_min_score:
+            counts["needs_review_without_llm"] += 1
+        else:
+            counts["llm_would_request"] += 1
+    return counts
+
+
 def should_confirm(args, row):
     proposal = row["proposal"]
     verification = row["llm_verification"]
@@ -311,8 +457,73 @@ def upsert_confirmed_rows(args, events_by_source, verification_rows, candidates)
         close_mapping_connection(conn, process)
 
 
+def initialize_incremental_run(args, events_by_source):
+    conn, process = mapping_connection(args.mapping_db)
+    try:
+        with conn.cursor() as cur:
+            run_id = create_pipeline_run(cur, args)
+            inventory_stats = upsert_source_inventory(cur, events_by_source)
+        conn.commit()
+        return run_id, inventory_stats
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        close_mapping_connection(conn, process)
+
+
+def upsert_single_verification_row(args, row):
+    conn, process = mapping_connection(args.mapping_db)
+    try:
+        with conn.cursor() as cur:
+            status = "confirmed" if should_confirm(args, row) else "needs_review"
+            our_team_id = upsert_our_team(cur, row, status)
+            upsert_source_teams_and_mappings(cur, our_team_id, row, status)
+            upsert_evidence(cur, our_team_id, row, status)
+            if not row.get("skip_llm_verification"):
+                upsert_llm_verification(cur, our_team_id, row)
+        conn.commit()
+        return status
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        close_mapping_connection(conn, process)
+
+
+def finish_incremental_run(args, run_id, inventory_stats, candidate_count, write_counts):
+    conn, process = mapping_connection(args.mapping_db)
+    try:
+        with conn.cursor() as cur:
+            coverage_stats = compute_and_store_source_stats(cur, run_id, args.sport, inventory_stats)
+            finish_pipeline_run(
+                cur,
+                run_id,
+                "completed",
+                {
+                    "verified": write_counts["verified"],
+                    "llm_requested": write_counts["llm_requested"],
+                    "llm_skipped_low_score": write_counts["llm_skipped_low_score"],
+                    "llm_skipped_existing": write_counts["llm_skipped_existing"],
+                    "llm_verified": write_counts["llm_verified"],
+                    "confirmed": write_counts["confirmed"],
+                    "needs_review": write_counts["needs_review"],
+                    "candidate_count": candidate_count,
+                    "inventory": inventory_stats,
+                    "coverage": coverage_stats,
+                },
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        close_mapping_connection(conn, process)
+
+
 def create_pipeline_run(cur, args):
     run_key = f"{args.sport}:{args.start}:{args.end}:{datetime.now(timezone.utc).isoformat()}"
+    sources = args.sources or ",".join(pipeline.DEFAULT_SOURCES.get(args.sport, ["sr", "ls"]))
     cur.execute(
         """
         INSERT INTO pipeline_run (run_key, sport, start_time, end_time, sources, params)
@@ -323,7 +534,7 @@ def create_pipeline_run(cur, args):
             args.sport,
             args.start,
             args.end,
-            args.sources or ",".join(pipeline.DEFAULT_SOURCES[args.sport]),
+            sources,
             json.dumps(vars(args), ensure_ascii=False, default=str),
         ),
     )
@@ -339,16 +550,30 @@ def finish_pipeline_run(cur, run_id, status, summary):
 
 def upsert_source_inventory(cur, events_by_source):
     stats = {}
-    for source, events in events_by_source.items():
-        source_team_ids = set()
+    for events in events_by_source.values():
         for event in events:
+            source_stats = stats.setdefault(
+                event.source,
+                {
+                    "source_events": 0,
+                    "source_team_ids": set(),
+                    "source_events_by_sport": {},
+                    "source_team_ids_by_sport": {},
+                },
+            )
+            source_stats["source_events"] += 1
+            source_stats["source_events_by_sport"][event.sport] = (
+                source_stats["source_events_by_sport"].get(event.sport, 0) + 1
+            )
+            source_stats["source_team_ids_by_sport"].setdefault(event.sport, set())
             upsert_source_event(cur, event)
             for side in ("home", "away"):
                 team_id = getattr(event, f"{side}_team_id")
                 team_name = getattr(event, f"{side}_team_name")
                 if not team_id:
                     continue
-                source_team_ids.add(team_id)
+                source_stats["source_team_ids"].add((event.sport, team_id))
+                source_stats["source_team_ids_by_sport"][event.sport].add(team_id)
                 upsert_source_team(
                     cur,
                     event.source,
@@ -358,11 +583,20 @@ def upsert_source_inventory(cur, events_by_source):
                     event.start_time,
                     event.start_time,
                 )
-        stats[source] = {
-            "source_events": len(events),
-            "source_teams": len(source_team_ids),
+    return {
+        source: {
+            "source_events": values["source_events"],
+            "source_teams": len(values["source_team_ids"]),
+            "sports": {
+                sport: {
+                    "source_events": values["source_events_by_sport"].get(sport, 0),
+                    "source_teams": len(team_ids),
+                }
+                for sport, team_ids in sorted(values["source_team_ids_by_sport"].items())
+            },
         }
-    return stats
+        for source, values in sorted(stats.items())
+    }
 
 
 def upsert_source_event(cur, event):
@@ -448,88 +682,99 @@ def upsert_source_team(cur, source, sport, source_team_id, source_team_name, fir
 def compute_and_store_source_stats(cur, run_id, sport, inventory_stats):
     coverage = {}
     for source in sorted(inventory_stats):
-        cur.execute(
-            """
-            SELECT COUNT(*) AS total_source_teams
-            FROM source_team
-            WHERE source=%s AND sport=%s
-            """,
-            (source, sport),
-        )
-        total_source_teams = int(cur.fetchone()["total_source_teams"] or 0)
-        cur.execute(
-            """
-            SELECT COUNT(*) AS mapped_source_teams
-            FROM source_team_mapping
-            WHERE source=%s AND sport=%s AND status='confirmed'
-            """,
-            (source, sport),
-        )
-        mapped_source_teams = int(cur.fetchone()["mapped_source_teams"] or 0)
-        unmapped_source_teams = max(0, total_source_teams - mapped_source_teams)
-        mapped_ratio = round(mapped_source_teams / total_source_teams, 6) if total_source_teams else 0
-        cur.execute(
-            """
-            SELECT COUNT(*) AS events_with_unmapped_team
-            FROM source_event e
-            LEFT JOIN source_team_mapping hm
-                ON hm.source=e.source
-                AND hm.sport=e.sport
-                AND hm.source_team_id=e.home_source_team_id
-                AND hm.status='confirmed'
-            LEFT JOIN source_team_mapping am
-                ON am.source=e.source
-                AND am.sport=e.sport
-                AND am.source_team_id=e.away_source_team_id
-                AND am.status='confirmed'
-            WHERE e.source=%s
-                AND e.sport=%s
-                AND (hm.id IS NULL OR am.id IS NULL)
-            """,
-            (source, sport),
-        )
-        events_with_unmapped_team = int(cur.fetchone()["events_with_unmapped_team"] or 0)
-        row = {
-            "source_events_in_run": inventory_stats[source]["source_events"],
-            "source_teams_in_run": inventory_stats[source]["source_teams"],
-            "total_source_teams": total_source_teams,
-            "mapped_source_teams": mapped_source_teams,
-            "unmapped_source_teams": unmapped_source_teams,
-            "mapped_ratio": mapped_ratio,
-            "events_with_unmapped_team": events_with_unmapped_team,
-        }
-        coverage[source] = row
-        cur.execute(
-            """
-            INSERT INTO source_team_match_stats (
-                run_id, source, sport, source_events_in_run, source_teams_in_run,
-                total_source_teams, mapped_source_teams, unmapped_source_teams,
-                mapped_ratio, events_with_unmapped_team
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                source_events_in_run=VALUES(source_events_in_run),
-                source_teams_in_run=VALUES(source_teams_in_run),
-                total_source_teams=VALUES(total_source_teams),
-                mapped_source_teams=VALUES(mapped_source_teams),
-                unmapped_source_teams=VALUES(unmapped_source_teams),
-                mapped_ratio=VALUES(mapped_ratio),
-                events_with_unmapped_team=VALUES(events_with_unmapped_team)
-            """,
-            (
-                run_id,
-                source,
-                sport,
-                row["source_events_in_run"],
-                row["source_teams_in_run"],
-                row["total_source_teams"],
-                row["mapped_source_teams"],
-                row["unmapped_source_teams"],
-                row["mapped_ratio"],
-                row["events_with_unmapped_team"],
-            ),
-        )
+        sports = sorted(inventory_stats[source].get("sports") or {sport: inventory_stats[source]})
+        if sport != "all":
+            sports = [sport]
+        coverage[source] = {}
+        for sport_key in sports:
+            row = compute_source_sport_stats(cur, run_id, source, sport_key, inventory_stats[source])
+            coverage[source][sport_key] = row
     return coverage
+
+
+def compute_source_sport_stats(cur, run_id, source, sport, source_inventory):
+    sport_inventory = (source_inventory.get("sports") or {}).get(sport, source_inventory)
+    cur.execute(
+        """
+        SELECT COUNT(*) AS total_source_teams
+        FROM source_team
+        WHERE source=%s AND sport=%s
+        """,
+        (source, sport),
+    )
+    total_source_teams = int(cur.fetchone()["total_source_teams"] or 0)
+    cur.execute(
+        """
+        SELECT COUNT(*) AS mapped_source_teams
+        FROM source_team_mapping
+        WHERE source=%s AND sport=%s AND status='confirmed'
+        """,
+        (source, sport),
+    )
+    mapped_source_teams = int(cur.fetchone()["mapped_source_teams"] or 0)
+    unmapped_source_teams = max(0, total_source_teams - mapped_source_teams)
+    mapped_ratio = round(mapped_source_teams / total_source_teams, 6) if total_source_teams else 0
+    cur.execute(
+        """
+        SELECT COUNT(*) AS events_with_unmapped_team
+        FROM source_event e
+        LEFT JOIN source_team_mapping hm
+            ON hm.source=e.source
+            AND hm.sport=e.sport
+            AND hm.source_team_id=e.home_source_team_id
+            AND hm.status='confirmed'
+        LEFT JOIN source_team_mapping am
+            ON am.source=e.source
+            AND am.sport=e.sport
+            AND am.source_team_id=e.away_source_team_id
+            AND am.status='confirmed'
+        WHERE e.source=%s
+            AND e.sport=%s
+            AND (hm.id IS NULL OR am.id IS NULL)
+        """,
+        (source, sport),
+    )
+    events_with_unmapped_team = int(cur.fetchone()["events_with_unmapped_team"] or 0)
+    row = {
+        "source_events_in_run": sport_inventory["source_events"],
+        "source_teams_in_run": sport_inventory["source_teams"],
+        "total_source_teams": total_source_teams,
+        "mapped_source_teams": mapped_source_teams,
+        "unmapped_source_teams": unmapped_source_teams,
+        "mapped_ratio": mapped_ratio,
+        "events_with_unmapped_team": events_with_unmapped_team,
+    }
+    cur.execute(
+        """
+        INSERT INTO source_team_match_stats (
+            run_id, source, sport, source_events_in_run, source_teams_in_run,
+            total_source_teams, mapped_source_teams, unmapped_source_teams,
+            mapped_ratio, events_with_unmapped_team
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            source_events_in_run=VALUES(source_events_in_run),
+            source_teams_in_run=VALUES(source_teams_in_run),
+            total_source_teams=VALUES(total_source_teams),
+            mapped_source_teams=VALUES(mapped_source_teams),
+            unmapped_source_teams=VALUES(unmapped_source_teams),
+            mapped_ratio=VALUES(mapped_ratio),
+            events_with_unmapped_team=VALUES(events_with_unmapped_team)
+        """,
+        (
+            run_id,
+            source,
+            sport,
+            row["source_events_in_run"],
+            row["source_teams_in_run"],
+            row["total_source_teams"],
+            row["mapped_source_teams"],
+            row["unmapped_source_teams"],
+            row["mapped_ratio"],
+            row["events_with_unmapped_team"],
+        ),
+    )
+    return row
 
 
 def upsert_our_team(cur, row, status):
@@ -608,7 +853,7 @@ def find_existing_our_team_id(cur, proposal):
 
 def upsert_source_teams_and_mappings(cur, our_team_id, row, status):
     proposal = row["proposal"]
-    confidence = float(row["llm_verification"].get("confidence") or 0)
+    confidence = row_confidence(row)
     for member in proposal.get("members", []):
         upsert_source_team(
             cur,
@@ -696,7 +941,7 @@ def upsert_evidence(cur, our_team_id, row, status):
                 1,
                 1 if evidence.get("home_away_reversed") else 0,
                 int(proposal.get("conflict_count") or 0),
-                float(row["llm_verification"].get("confidence") or 0),
+                row_confidence(row),
                 "confirmed" if status == "confirmed" else "needs_review",
                 json.dumps(evidence, ensure_ascii=False),
             ),
@@ -717,6 +962,9 @@ def parse_candidate_event_ids(candidate_key):
 def upsert_llm_verification(cur, our_team_id, row):
     proposal = row["proposal"]
     verification = row["llm_verification"]
+    proposal_key = proposal["proposed_our_team_id"]
+    if row.get("run_id"):
+        proposal_key = f"run-{row['run_id']}:{proposal_key}"
     cur.execute(
         """
         INSERT INTO llm_verification (
@@ -735,7 +983,7 @@ def upsert_llm_verification(cur, our_team_id, row):
         """,
         (
             our_team_id,
-            proposal["proposed_our_team_id"],
+            proposal_key,
             row["llm_provider"],
             row["llm_model"],
             none_bool(verification.get("same_team")),
@@ -748,6 +996,17 @@ def upsert_llm_verification(cur, our_team_id, row):
     )
 
 
+def row_confidence(row):
+    proposal = row["proposal"]
+    verification = row.get("llm_verification") or {}
+    return float(
+        verification.get("confidence")
+        or proposal.get("team_confidence")
+        or proposal.get("avg_event_score")
+        or 0
+    )
+
+
 def main():
     args = parse_args()
     load_env_files(args)
@@ -757,15 +1016,23 @@ def main():
     events_by_source, candidates, proposals = generate_proposals(args)
     print(f"candidate_count={len(candidates)}")
     print(f"proposal_count={len(proposals)}")
-    verification_rows = verify_proposals(args, proposals)
-    confirmed_rows = [row for row in verification_rows if should_confirm(args, row)]
-    print(f"llm_verified_count={sum(1 for row in verification_rows if row['llm_verification'].get('recommended_status') == 'llm_verified')}")
-    print(f"confirmed_eligible_count={len(confirmed_rows)}")
     if args.dry_run:
+        plan_counts = count_llm_plan(args, proposals)
+        print(f"llm_would_request_count={plan_counts['llm_would_request']}")
+        print(f"needs_review_without_llm_count={plan_counts['needs_review_without_llm']}")
         print("dry_run=true; not writing mapping DB")
         return
-    confirmed_count = upsert_confirmed_rows(args, events_by_source, verification_rows, candidates)
-    print(f"confirmed_written={confirmed_count}")
+    run_id, inventory_stats = initialize_incremental_run(args, events_by_source)
+    print(f"pipeline_run_id={run_id}")
+    print("source_inventory_written=true")
+    write_counts = verify_and_write_proposals(args, proposals, run_id)
+    finish_incremental_run(args, run_id, inventory_stats, len(candidates), write_counts)
+    print(f"llm_verified_count={write_counts['llm_verified']}")
+    print(f"confirmed_eligible_count={write_counts['confirmed']}")
+    print(f"confirmed_written={write_counts['confirmed']}")
+    print(f"llm_requested_count={write_counts['llm_requested']}")
+    print(f"llm_skipped_low_score_count={write_counts['llm_skipped_low_score']}")
+    print(f"llm_skipped_existing_count={write_counts['llm_skipped_existing']}")
 
 
 if __name__ == "__main__":

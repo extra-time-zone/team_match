@@ -31,6 +31,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_SOURCES = {
     "football": ["thesports_fb", "sr", "ls"],
     "basketball": ["thesports_bb", "sr", "ls"],
+    "all": ["thesports_fb", "thesports_bb", "sr", "ls"],
 }
 SOURCE_PRIORITY = {"thesports": 0, "sr": 1, "ls": 2, "bc": 3}
 
@@ -65,8 +66,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run multi-source team mapping candidate pipeline.")
     parser.add_argument("--env-file", default=".env.market", help="Path to env file. Default: .env.market")
     parser.add_argument("--llm-env-file", default=".env.llm", help="Optional LLM env file. Default: .env.llm")
-    parser.add_argument("--sport", required=True, choices=("football", "basketball"))
-    parser.add_argument("--sources", help="Comma separated sources. Default: thesports/sr/ls for the sport.")
+    parser.add_argument("--sport", required=True, help="Sport to process: football, basketball, all, or a canonical sport key.")
+    parser.add_argument("--sources", help="Comma separated sources. Default: thesports/sr/ls for football/basketball, all sources for all.")
     parser.add_argument("--start", required=True, help="Start time inclusive. Example: 2026-05-14 00:00:00")
     parser.add_argument("--end", required=True, help="End time exclusive. Example: 2026-05-15 00:00:00")
     parser.add_argument("--test1-mysql-password", help="Password for named MySQL test1. Prefer --prompt-test1-password.")
@@ -129,7 +130,7 @@ def parse_sources(args):
     if args.sources:
         sources = [item.strip() for item in args.sources.split(",") if item.strip()]
     else:
-        sources = DEFAULT_SOURCES[args.sport]
+        sources = DEFAULT_SOURCES.get(args.sport, ["sr", "ls"])
     unsupported = [source for source in sources if source not in core.SOURCE_MYSQL or source == "bc"]
     if unsupported:
         raise SystemExit(f"Unsupported sources for now: {', '.join(unsupported)}")
@@ -332,10 +333,11 @@ def build_our_team_proposals(judgments, args):
         if len(members) < 2:
             continue
         canonical = choose_canonical_member(members)
+        proposal_sport = canonical["sport"]
         proposals.append(
             {
-                "proposed_our_team_id": f"proposal-{args.sport}-{index:06d}",
-                "sport": args.sport,
+                "proposed_our_team_id": f"proposal-{proposal_id_sport(proposal_sport)}-{index:06d}",
+                "sport": proposal_sport,
                 "canonical_name": canonical["source_team_name"],
                 "review_status": "needs_sofascore_verification",
                 "members": members,
@@ -403,10 +405,11 @@ def build_our_team_proposals_from_evidence(candidates, args):
         avg_score = sum(edge["event_score"] for edge in evidence) / len(evidence)
         team_confidence = calculate_team_confidence(source_count, len(evidence), avg_score, conflict_count)
         canonical = choose_canonical_member(members)
+        proposal_sport = canonical["sport"]
         proposals.append(
             {
-                "proposed_our_team_id": f"proposal-{args.sport}-{index:06d}",
-                "sport": args.sport,
+                "proposed_our_team_id": f"proposal-{proposal_id_sport(proposal_sport)}-{index:06d}",
+                "sport": proposal_sport,
                 "canonical_name": canonical["source_team_name"],
                 "review_status": proposal_status(team_confidence, source_count, len(evidence), conflict_count),
                 "source_count": source_count,
@@ -431,8 +434,12 @@ def build_our_team_proposals_from_evidence(candidates, args):
     if args.max_proposals:
         proposals = proposals[: args.max_proposals]
     for index, proposal in enumerate(proposals, 1):
-        proposal["proposed_our_team_id"] = f"proposal-{args.sport}-{index:06d}"
+        proposal["proposed_our_team_id"] = f"proposal-{proposal_id_sport(proposal['sport'])}-{index:06d}"
     return proposals
+
+
+def proposal_id_sport(sport):
+    return "".join(ch if ch.isalnum() else "_" for ch in str(sport or "unknown")).strip("_") or "unknown"
 
 
 def calculate_team_confidence(source_count, evidence_count, avg_score, conflict_count):

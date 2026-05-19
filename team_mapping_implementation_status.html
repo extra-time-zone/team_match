@@ -323,6 +323,33 @@
     </section>
 
     <section>
+      <h2>运动类型范围</h2>
+      <div class="two-col">
+        <div class="panel green">
+          <h3>支持全运动类型</h3>
+          <p>
+            <code>--sport football</code> 和 <code>--sport basketball</code> 只跑指定运动；
+            <code>--sport all</code> 会处理 <code>sr</code>、<code>ls</code> 里的所有运动类型，并按每条比赛自己的 sport 分桶映射。
+          </p>
+          <p class="small">
+            <code>thesports</code> 当前只有 <code>ts_fb_match</code> 和 <code>ts_bb_match</code>，所以在全运动模式下只给 football/basketball 提供 thesports 证据。
+            其他运动会先主要通过 <code>sr &lt;-&gt; ls</code> 做映射。
+          </p>
+        </div>
+        <div class="panel blue">
+          <h3>运动字典</h3>
+          <p>
+            <code>sr</code> 使用 <code>sr_sport_en</code>，例如 <code>sr:sport:1 = Soccer</code>、<code>sr:sport:2 = Basketball</code>。
+            <code>ls</code> 使用 <code>ls_sport_en</code>，例如 <code>6046 = Football</code>、<code>48242 = Basketball</code>。
+          </p>
+          <p class="small">
+            程序会把 <code>Soccer</code>/<code>Football</code> 统一成 <code>football</code>，把 <code>Table Tennis</code> 这类名称标准化成 <code>table_tennis</code>。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>实现流程</h2>
       <div class="panel">
         <div class="flow">
@@ -335,6 +362,92 @@
           <div class="step">LLM 复核 proposal</div>
         </div>
       </div>
+    </section>
+
+    <section>
+      <h2>两源先确认，再扩散补齐</h2>
+      <div class="two-col">
+        <div class="panel green">
+          <h3>为什么允许两源 confirmed</h3>
+          <p>
+            三源或四源同时命中当然更稳，但实际数据经常会有某个源缺比赛、时间不一致、比分未同步或队名差异较大。
+            所以第一阶段允许 <code>thesports + sr</code>、<code>thesports + ls</code>、<code>sr + ls</code> 这种两源高置信 proposal 先 confirmed。
+          </p>
+          <p class="small">
+            confirmed 后不是结束，而是把这支球队变成 anchor，继续回查更多比赛，把缺失源补到同一个 <code>our_team_id</code> 下。
+          </p>
+        </div>
+        <div class="panel blue">
+          <h3>最终查询目标</h3>
+          <p>
+            最终希望一个 <code>our_team_id</code> 可以查出所有 source 的球队 ID 和名称：
+            <code>thesports</code>、<code>sr</code>、<code>ls</code>，以及后续 <code>bc</code>。
+          </p>
+          <pre><code>SELECT *
+FROM team_mapping.v_our_team_source_mapping
+WHERE our_team_id = 3;</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Anchor 扩散逻辑</h2>
+      <div class="panel">
+        <div class="flow">
+          <div class="step">读取 confirmed our_team</div>
+          <div class="step">找到已有 source team ID</div>
+          <div class="step">查询 anchor 球队全部比赛</div>
+          <div class="step">到缺失源找同场比赛</div>
+          <div class="step">根据主客队位置反推缺失源球队</div>
+          <div class="step">累计多场证据</div>
+          <div class="step">写回同一个 our_team_id</div>
+        </div>
+        <p class="small">
+          例子：如果 <code>our_team_id=3</code> 已经确认了 <code>thesports</code> 和 <code>sr</code> 的 Colo Colo，
+          但没有 <code>ls</code>，程序会用已确认的 Colo Colo 比赛去 <code>ls</code> 里找同时间、同比分、同主客关系的比赛。
+          找到后就能反推出 <code>ls</code> 的 Colo Colo team_id，并写入同一个 <code>our_team_id=3</code>。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Anchor 确认规则</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>规则</th>
+            <th>建议阈值</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>目标源一致</td>
+            <td>同一个 <code>target_source_team_id</code></td>
+            <td>多场比赛反推出的缺失源球队 ID 必须一致，不能一会儿指向 A，一会儿指向 B。</td>
+          </tr>
+          <tr>
+            <td>比赛证据数量</td>
+            <td><code>min_anchor_evidence &gt;= 2</code></td>
+            <td>一场比赛可以先 <code>needs_review</code>；两场以上且无冲突，才适合自动 confirmed。</td>
+          </tr>
+          <tr>
+            <td>事件匹配分</td>
+            <td><code>event_score &gt;= 0.90</code></td>
+            <td>综合时间、比分、主客方向、队名和赛事信息。anchor 阶段可以比初始匹配略低，因为已有 confirmed 球队兜底。</td>
+          </tr>
+          <tr>
+            <td>冲突数量</td>
+            <td><code>conflict_count = 0</code></td>
+            <td>出现比分冲突、主客方向冲突、同一个源多个 team_id 互相冲突时，不自动 confirmed。</td>
+          </tr>
+          <tr>
+            <td>证据类型</td>
+            <td><code>anchor_propagation</code></td>
+            <td>写入 <code>team_mapping_evidence.evidence_type</code>，和初始 <code>event_match</code> 区分开。</td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
     <section>
@@ -389,13 +502,18 @@
             <td>否</td>
           </tr>
           <tr>
+            <td><code>seed_our_team_from_sr.py</code></td>
+            <td>以 SR 为基准源，把所有 SR source team 生成/升级为 confirmed our_team，标记 <code>confirmed_method=sr_seed</code>。</td>
+            <td>只写 mapping DB</td>
+          </tr>
+          <tr>
             <td><code>team_mapping_schema.sql</code></td>
             <td>未来落库表结构草案，目前只是本地设计稿。</td>
             <td>未执行</td>
           </tr>
           <tr>
             <td><code>schema/team_mapping_schema.sql</code></td>
-            <td>正式长表 schema，包含 <code>our_team</code>、<code>source_team_mapping</code>、<code>team_mapping_evidence</code>、<code>source_team_match_stats</code> 等。</td>
+            <td>正式长表 schema，包含 <code>our_team</code>、<code>source_team_mapping</code>、<code>team_mapping_evidence</code>、<code>source_team_match_stats</code> 和查询 view。</td>
             <td>执行后建库建表</td>
           </tr>
           <tr>
@@ -556,15 +674,92 @@ LLM_PROVIDER=deepseek</code></pre>
           <h3>11. confirmed 落库</h3>
           <pre><code>docker compose run --rm team-mapper \
   python3 run_confirmed_pipeline.py \
-  --sport football \
+  --sport all \
   --start '2026-04-01 00:00:00' \
   --end '2026-05-15 00:00:00' \
+  --review-evidence-min-score 0.85 \
   --evidence-min-score 0.95 \
   --init-schema</code></pre>
           <p class="small">
-            满足 <code>llm_verified</code>、<code>llm_confidence &gt;= 0.90</code>、无冲突、
-            <code>avg_event_score &gt;= 0.95</code> 的 proposal 会写入 <code>test1.team_mapping</code>。
-            默认会跑完时间范围内全部三源数据；如需抽样测试，再显式加 <code>--per-source-limit</code> 或 <code>--max-proposals</code>。
+            <code>avg_event_score &gt;= 0.95</code> 的 proposal 才会进入 LLM 复核，并且满足 <code>llm_verified</code>、
+            <code>llm_confidence &gt;= 0.90</code>、无冲突后 confirmed。
+            <code>0.85 &lt;= avg_event_score &lt; 0.95</code> 的 proposal 会直接保存为 <code>needs_review</code>，不消耗 LLM。
+            <code>--sport all</code> 会跑完时间范围内所有运动类型；如需抽样测试，再显式加 <code>--per-source-limit</code> 或 <code>--max-proposals</code>。
+            新版本会先写 <code>source_event/source_team</code> 底账，然后每个 proposal 完成 LLM 复核后立即 upsert 并 commit。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>12. SR 基准 seed</h3>
+          <pre><code>docker compose run --rm team-mapper \
+  python3 seed_our_team_from_sr.py \
+  --sport all \
+  --dry-run</code></pre>
+          <pre><code>docker compose run --rm team-mapper \
+  python3 seed_our_team_from_sr.py \
+  --sport all \
+  --init-schema</code></pre>
+          <p class="small">
+            这会把 <code>source_team.source='sr'</code> 的队伍全部导入 <code>our_team</code>，
+            并写入 <code>source_team_mapping.status='confirmed'</code>、<code>confirmed_method='sr_seed'</code>。
+            SR seed 的 confirmed 含义是“我们内部基准 ID 已确认来自 SR”，不是跨源验证完成。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>13. 后续 Anchor 补 ls</h3>
+          <pre><code>docker compose run --rm team-mapper \
+  python3 run_anchor_propagation.py \
+  --sport football \
+  --target-source ls \
+  --start '2026-04-01 00:00:00' \
+  --end '2026-05-15 00:00:00' \
+  --min-anchor-evidence 2 \
+  --min-event-score 0.90</code></pre>
+          <p class="small">
+            这个脚本是下一步要实现的扩散任务：用已经 confirmed 的球队作为 anchor，把缺失的 <code>ls</code> source team 补到同一个 <code>our_team_id</code>。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>14. 后续 Anchor 补 bc</h3>
+          <pre><code>docker compose run --rm team-mapper \
+  python3 run_anchor_propagation.py \
+  --sport football \
+  --target-source bc \
+  --start '2026-04-01 00:00:00' \
+  --end '2026-05-15 00:00:00' \
+  --min-anchor-evidence 2 \
+  --min-event-score 0.90</code></pre>
+          <p class="small">
+            等 <code>bc_sport_event</code> 接入后，扩展方式一样：把 <code>bc</code> 当作 target source，用已有三源 confirmed 数据反推出 bc 球队 ID。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>15. 横向查询 our_team</h3>
+          <pre><code>SELECT *
+FROM team_mapping.v_our_team_source_mapping
+WHERE our_team_id = 3;</code></pre>
+          <p class="small">
+            查询同一个 <code>our_team_id</code> 下已经映射到的 <code>thesports/sr/ls/bc</code> ID 和 name。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>16. 查询单源球队状态</h3>
+          <pre><code>SELECT source, sport, source_team_id, source_team_name, source_team_status
+FROM team_mapping.v_source_team_status
+WHERE source_team_status IN ('unmatched', 'pending_more_sources')
+ORDER BY source, sport, source_team_name
+LIMIT 100;</code></pre>
+          <p class="small">
+            <code>source_team</code> 本身不放状态；这个 view 会动态展示 <code>mapped</code>、<code>pending_more_sources</code>、<code>unmatched</code>。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>17. 查询单源统计</h3>
+          <pre><code>SELECT run_id, source, sport, total_source_teams, mapped_teams,
+       unmatched_teams, single_source_active_teams, events_with_unmapped_team
+FROM team_mapping.v_source_team_match_stats
+ORDER BY run_id DESC, source, sport;</code></pre>
+          <p class="small">
+            这个 view 把底层 <code>mapped_source_teams</code>、<code>unmapped_source_teams</code> 转成更好读的统计口径。
           </p>
         </div>
       </div>
@@ -710,7 +905,7 @@ LLM_PROVIDER=deepseek</code></pre>
       <h2>判断规则</h2>
       <div class="grid">
         <div class="panel green">
-          <h3>可作为 Seed Candidate</h3>
+          <h3>进入 LLM confirmed</h3>
           <ul>
             <li><code>conflict_count = 0</code></li>
             <li><code>avg_event_score &gt;= 0.95</code></li>
@@ -730,6 +925,7 @@ LLM_PROVIDER=deepseek</code></pre>
         <div class="panel amber">
           <h3>需要更多证据</h3>
           <ul>
+            <li><code>0.85 &lt;= avg_event_score &lt; 0.95</code>，直接保存为 <code>needs_review</code>，不调用 LLM。</li>
             <li><code>source_count = 2</code> 且 <code>evidence_count = 1</code></li>
             <li>有缩写、翻译、青年队、女队、预备队风险。</li>
             <li>LLM 返回 <code>needs_review</code> 或存在 <code>risk_flags</code>。</li>
@@ -773,12 +969,11 @@ conflict_penalty = min(conflict_count * 0.18, 0.54)</code></pre>
       <div class="panel green">
         <h3>Anchor Propagation</h3>
         <ol>
-          <li>从 LLM verified 的高质量候选中挑 seed confirmed team。</li>
-          <li>查询这些球队在各源里的更多比赛。</li>
-          <li>用已确认球队作为 anchor，对齐同一场比赛。</li>
-          <li>从同场比赛反推出对手球队映射。</li>
-          <li>累计多场、多源 evidence，形成真正的 <code>team_confidence</code>。</li>
-          <li>达到阈值后再进入正式 confirmed 映射。</li>
+          <li>实现 <code>run_anchor_propagation.py</code>，先支持 <code>--target-source ls</code>。</li>
+          <li>从 <code>source_team_mapping.status='confirmed'</code> 读取 anchor 球队。</li>
+          <li>用 anchor 球队在已有源里的比赛，对齐目标源同场比赛。</li>
+          <li>把目标源 team_id 写入同一个 <code>our_team_id</code>，证据类型为 <code>anchor_propagation</code>。</li>
+          <li>后续 <code>bc</code> 有数据后，复用同一脚本把 <code>--target-source</code> 改成 <code>bc</code>。</li>
         </ol>
       </div>
     </section>

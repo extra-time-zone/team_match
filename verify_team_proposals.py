@@ -29,7 +29,7 @@ and event-match evidence.
 Decide whether all source_team_id members represent the same real-world team.
 
 Rules:
-- Football and basketball must never be mixed.
+- Different sports must never be mixed.
 - Youth, reserve, women, and senior teams are different teams unless the source
   names and evidence clearly indicate the same level.
 - Same event evidence is strong, but one event is not enough for automatic final
