@@ -82,6 +82,33 @@ CREATE TABLE IF NOT EXISTS source_team_mapping (
     CONSTRAINT fk_mapping_our_team FOREIGN KEY (our_team_id) REFERENCES our_team(id)
 );
 
+CREATE TABLE IF NOT EXISTS our_team_source_map (
+    our_team_id BIGINT UNSIGNED NOT NULL,
+    sport VARCHAR(32) NOT NULL,
+    canonical_name VARCHAR(200) NOT NULL,
+    our_team_status ENUM('seed_candidate', 'confirmed', 'needs_review', 'rejected', 'inactive') NOT NULL,
+    our_team_confidence DECIMAL(8,4) NOT NULL DEFAULT 0,
+    ts_id TEXT NULL,
+    ts_name TEXT NULL,
+    ts_status VARCHAR(32) NULL,
+    sr_id TEXT NULL,
+    sr_name TEXT NULL,
+    sr_status VARCHAR(32) NULL,
+    ls_id TEXT NULL,
+    ls_name TEXT NULL,
+    ls_status VARCHAR(32) NULL,
+    bc_id TEXT NULL,
+    bc_name TEXT NULL,
+    bc_status VARCHAR(32) NULL,
+    mapped_source_count INT NOT NULL DEFAULT 0,
+    mapped_sources VARCHAR(255) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (our_team_id),
+    KEY idx_our_team_source_map_sport (sport, our_team_status, mapped_source_count),
+    CONSTRAINT fk_source_map_our_team FOREIGN KEY (our_team_id) REFERENCES our_team(id)
+);
+
 CREATE TABLE IF NOT EXISTS source_event (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     source VARCHAR(32) NOT NULL,
@@ -104,6 +131,24 @@ CREATE TABLE IF NOT EXISTS source_event (
     KEY idx_source_event_time (sport, start_time),
     KEY idx_source_event_home (source, sport, home_source_team_id),
     KEY idx_source_event_away (source, sport, away_source_team_id)
+);
+
+CREATE TABLE IF NOT EXISTS ts_offical_match (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    sport VARCHAR(32) NOT NULL,
+    sport_radar_match_id VARCHAR(120) NOT NULL,
+    thesports_uuid VARCHAR(120) NOT NULL,
+    is_same TINYINT NOT NULL DEFAULT 1,
+    raw_payload JSON NULL,
+    fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_ts_offical_match_sport_sr (sport, sport_radar_match_id),
+    UNIQUE KEY uk_ts_offical_match_sport_ts (sport, thesports_uuid),
+    KEY idx_ts_offical_match_sport_same (sport, is_same),
+    KEY idx_ts_offical_match_ts_uuid (thesports_uuid),
+    KEY idx_ts_offical_match_sr_id (sport_radar_match_id)
 );
 
 CREATE TABLE IF NOT EXISTS team_mapping_evidence (
@@ -158,6 +203,42 @@ CREATE TABLE IF NOT EXISTS llm_verification (
     KEY idx_llm_our_team (our_team_id),
     KEY idx_llm_status (recommended_status, confidence),
     CONSTRAINT fk_llm_our_team FOREIGN KEY (our_team_id) REFERENCES our_team(id)
+);
+
+CREATE TABLE IF NOT EXISTS team_mapping_proposal (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    run_id BIGINT UNSIGNED NOT NULL,
+    proposal_key VARCHAR(120) NOT NULL,
+    our_team_id BIGINT UNSIGNED NULL,
+    sport VARCHAR(32) NOT NULL,
+    canonical_name VARCHAR(200) NOT NULL,
+    source_count INT NOT NULL DEFAULT 0,
+    evidence_count INT NOT NULL DEFAULT 0,
+    avg_event_score DECIMAL(8,4) NOT NULL DEFAULT 0,
+    best_event_score DECIMAL(8,4) NOT NULL DEFAULT 0,
+    team_confidence DECIMAL(8,4) NOT NULL DEFAULT 0,
+    conflict_count INT NOT NULL DEFAULT 0,
+    llm_provider VARCHAR(32) NULL,
+    llm_model VARCHAR(100) NULL,
+    llm_requested TINYINT NOT NULL DEFAULT 0,
+    skip_reason VARCHAR(60) NULL,
+    llm_same_team TINYINT NULL,
+    llm_confidence DECIMAL(8,4) NULL,
+    recommended_status ENUM('llm_verified', 'needs_review', 'reject') NOT NULL DEFAULT 'needs_review',
+    written_status ENUM('confirmed', 'needs_review', 'rejected') NOT NULL DEFAULT 'needs_review',
+    risk_flags JSON NULL,
+    reason TEXT NULL,
+    members JSON NULL,
+    proposal_payload JSON NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_team_mapping_proposal_run_key (run_id, proposal_key),
+    KEY idx_team_mapping_proposal_run_status (run_id, written_status, skip_reason),
+    KEY idx_team_mapping_proposal_score (sport, avg_event_score, team_confidence),
+    KEY idx_team_mapping_proposal_our_team (our_team_id),
+    CONSTRAINT fk_proposal_run FOREIGN KEY (run_id) REFERENCES pipeline_run(id),
+    CONSTRAINT fk_proposal_our_team FOREIGN KEY (our_team_id) REFERENCES our_team(id)
 );
 
 CREATE TABLE IF NOT EXISTS team_alias (
