@@ -174,10 +174,12 @@ def seed_rows(conn, rows, args):
     promoted = 0
     already_confirmed = 0
     processed = 0
+    touched_our_team_ids = []
     with conn.cursor() as cur:
         for row in rows:
             processed += 1
             if row.get("mapping_status") == "confirmed" and row.get("our_team_id"):
+                our_team_id = row["our_team_id"]
                 promote_existing_our_team(cur, row["our_team_id"], row, args.confidence)
                 upsert_sr_mapping(cur, row["our_team_id"], row, args.confidence)
                 already_confirmed += 1
@@ -188,9 +190,14 @@ def seed_rows(conn, rows, args):
                     promoted += 1
                 else:
                     created += 1
+            touched_our_team_ids.append(our_team_id)
             if processed % args.batch_size == 0:
+                confirmed.refresh_our_team_source_map(cur, touched_our_team_ids)
+                touched_our_team_ids = []
                 conn.commit()
                 print(f"processed={processed} created={created} promoted={promoted} already_confirmed={already_confirmed}")
+        if touched_our_team_ids:
+            confirmed.refresh_our_team_source_map(cur, touched_our_team_ids)
     conn.commit()
     return {
         "processed": processed,

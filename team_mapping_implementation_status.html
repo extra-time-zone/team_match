@@ -507,13 +507,23 @@ WHERE our_team_id = 3;</code></pre>
             <td>只写 mapping DB</td>
           </tr>
           <tr>
+            <td><code>inspect_low_score_proposals.py</code></td>
+            <td>查看因 <code>avg_event_score &lt; 0.95</code> 被跳过 LLM、落为 <code>needs_review</code> 的 proposal。</td>
+            <td>只读 mapping DB</td>
+          </tr>
+          <tr>
+            <td><code>refresh_our_team_source_map.py</code></td>
+            <td>从 <code>source_team_mapping</code> 刷新宽表 <code>our_team_source_map</code>，方便按 <code>our_team_id</code> 查 <code>ts_id/sr_id/ls_id/bc_id</code>。</td>
+            <td>只写 mapping DB 宽表缓存</td>
+          </tr>
+          <tr>
             <td><code>team_mapping_schema.sql</code></td>
             <td>未来落库表结构草案，目前只是本地设计稿。</td>
             <td>未执行</td>
           </tr>
           <tr>
             <td><code>schema/team_mapping_schema.sql</code></td>
-            <td>正式长表 schema，包含 <code>our_team</code>、<code>source_team_mapping</code>、<code>team_mapping_evidence</code>、<code>source_team_match_stats</code> 和查询 view。</td>
+            <td>正式 schema，包含长表 <code>source_team_mapping</code>、proposal 审计表 <code>team_mapping_proposal</code>、宽表 <code>our_team_source_map</code>、证据表和查询 view。</td>
             <td>执行后建库建表</td>
           </tr>
           <tr>
@@ -760,6 +770,35 @@ FROM team_mapping.v_source_team_match_stats
 ORDER BY run_id DESC, source, sport;</code></pre>
           <p class="small">
             这个 view 把底层 <code>mapped_source_teams</code>、<code>unmapped_source_teams</code> 转成更好读的统计口径。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>18. 查看 low_score proposal</h3>
+          <pre><code>docker compose run --rm team-mapper \
+  python3 inspect_low_score_proposals.py \
+  --sport football \
+  --limit 100</code></pre>
+          <pre><code>SELECT *
+FROM team_mapping.team_mapping_proposal
+WHERE skip_reason = 'low_score'
+ORDER BY avg_event_score DESC, evidence_count DESC
+LIMIT 100;</code></pre>
+          <p class="small">
+            新版本会把每个 proposal 的 <code>skip_reason</code>、LLM 是否请求、写入状态和原始 payload 保存到
+            <code>team_mapping_proposal</code>，以后能按 run 精确回看。
+          </p>
+        </div>
+        <div class="panel">
+          <h3>19. 刷新 ID 宽表</h3>
+          <pre><code>docker compose run --rm team-mapper \
+  python3 refresh_our_team_source_map.py \
+  --init-schema</code></pre>
+          <pre><code>SELECT our_team_id, sport, canonical_name, ts_id, sr_id, ls_id, bc_id, mapped_sources
+FROM team_mapping.our_team_source_map
+WHERE our_team_id = 3;</code></pre>
+          <p class="small">
+            <code>our_team_source_map</code> 从长表 <code>source_team_mapping</code> 汇总而来。
+            当前只有两个源时另外两个源字段会是空；后面 ls 或 bc 被补到同一个 <code>our_team_id</code> 后，刷新宽表就会填上。
           </p>
         </div>
       </div>

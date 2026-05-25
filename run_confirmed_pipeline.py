@@ -326,6 +326,7 @@ def verify_and_write_proposals(args, proposals, run_id):
             "llm_model": llm_model,
             "llm_verification": result,
             "skip_llm_verification": skip_llm,
+            "skip_reason": skip_reason,
         }
         status = upsert_single_verification_row(args, row)
         counts["verified"] += 1
@@ -431,7 +432,9 @@ def upsert_confirmed_rows(args, events_by_source, verification_rows, candidates)
                 our_team_id = upsert_our_team(cur, row, status)
                 upsert_source_teams_and_mappings(cur, our_team_id, row, status)
                 upsert_evidence(cur, our_team_id, row, status)
+                upsert_team_mapping_proposal(cur, our_team_id, row, status)
                 upsert_llm_verification(cur, our_team_id, row)
+                refresh_our_team_source_map(cur, [our_team_id])
                 if status == "confirmed":
                     confirmed_count += 1
             coverage_stats = compute_and_store_source_stats(cur, run_id, args.sport, inventory_stats)
@@ -480,8 +483,10 @@ def upsert_single_verification_row(args, row):
             our_team_id = upsert_our_team(cur, row, status)
             upsert_source_teams_and_mappings(cur, our_team_id, row, status)
             upsert_evidence(cur, our_team_id, row, status)
+            upsert_team_mapping_proposal(cur, our_team_id, row, status)
             if not row.get("skip_llm_verification"):
                 upsert_llm_verification(cur, our_team_id, row)
+            refresh_our_team_source_map(cur, [our_team_id])
         conn.commit()
         return status
     except Exception:
@@ -993,6 +998,146 @@ def upsert_llm_verification(cur, our_team_id, row):
             verification.get("reason"),
             json.dumps(verification, ensure_ascii=False),
         ),
+    )
+
+
+def upsert_team_mapping_proposal(cur, our_team_id, row, status):
+    proposal = row["proposal"]
+    verification = row["llm_verification"]
+    proposal_key = proposal["proposed_our_team_id"]
+    best_event_score = max(
+        [float(evidence.get("event_score") or 0) for evidence in proposal.get("evidence", [])] or [0]
+    )
+    cur.execute(
+        """
+        INSERT INTO team_mapping_proposal (
+            run_id, proposal_key, our_team_id, sport, canonical_name,
+            source_count, evidence_count, avg_event_score, best_event_score,
+            team_confidence, conflict_count, llm_provider, llm_model,
+            llm_requested, skip_reason, llm_same_team, llm_confidence,
+            recommended_status, written_status, risk_flags, reason, members,
+            proposal_payload
+        )
+        VALUES (
+            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s, %s,
+            %s
+        )
+        ON DUPLICATE KEY UPDATE
+            our_team_id=VALUES(our_team_id),
+            canonical_name=VALUES(canonical_name),
+            source_count=VALUES(source_count),
+            evidence_count=VALUES(evidence_count),
+            avg_event_score=VALUES(avg_event_score),
+            best_event_score=VALUES(best_event_score),
+            team_confidence=VALUES(team_confidence),
+            conflict_count=VALUES(conflict_count),
+            llm_provider=VALUES(llm_provider),
+            llm_model=VALUES(llm_model),
+            llm_requested=VALUES(llm_requested),
+            skip_reason=VALUES(skip_reason),
+            llm_same_team=VALUES(llm_same_team),
+            llm_confidence=VALUES(llm_confidence),
+            recommended_status=VALUES(recommended_status),
+            written_status=VALUES(written_status),
+            risk_flags=VALUES(risk_flags),
+            reason=VALUES(reason),
+            members=VALUES(members),
+            proposal_payload=VALUES(proposal_payload)
+        """,
+        (
+            row["run_id"],
+            proposal_key,
+            our_team_id,
+            proposal["sport"],
+            proposal["canonical_name"],
+            int(proposal.get("source_count") or 0),
+            int(proposal.get("evidence_count") or 0),
+            float(proposal.get("avg_event_score") or 0),
+            best_event_score,
+            float(proposal.get("team_confidence") or 0),
+            int(proposal.get("conflict_count") or 0),
+            row.get("llm_provider"),
+            row.get("llm_model"),
+            0 if row.get("skip_llm_verification") else 1,
+            row.get("skip_reason"),
+            none_bool(verification.get("same_team")),
+            float(verification.get("confidence") or 0),
+            verification.get("recommended_status") or "needs_review",
+            status,
+            json.dumps(verification.get("risk_flags") or [], ensure_ascii=False),
+            verification.get("reason"),
+            json.dumps(proposal.get("members") or [], ensure_ascii=False),
+            json.dumps(proposal, ensure_ascii=False),
+        ),
+    )
+
+
+def refresh_our_team_source_map(cur, our_team_ids=None):
+    where_sql = ""
+    params = []
+    if our_team_ids:
+        placeholders = ", ".join(["%s"] * len(our_team_ids))
+        where_sql = f"WHERE ot.id IN ({placeholders})"
+        params.extend(our_team_ids)
+    cur.execute(
+        f"""
+        INSERT INTO our_team_source_map (
+            our_team_id, sport, canonical_name, our_team_status, our_team_confidence,
+            ts_id, ts_name, ts_status,
+            sr_id, sr_name, sr_status,
+            ls_id, ls_name, ls_status,
+            bc_id, bc_name, bc_status,
+            mapped_source_count, mapped_sources
+        )
+        SELECT
+            ot.id AS our_team_id,
+            ot.sport,
+            ot.canonical_name,
+            ot.status AS our_team_status,
+            ot.confidence AS our_team_confidence,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='thesports' THEN stm.source_team_id END ORDER BY stm.source_team_id SEPARATOR ',') AS ts_id,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='thesports' THEN stm.source_team_name END ORDER BY stm.source_team_name SEPARATOR ',') AS ts_name,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='thesports' THEN stm.status END ORDER BY stm.status SEPARATOR ',') AS ts_status,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='sr' THEN stm.source_team_id END ORDER BY stm.source_team_id SEPARATOR ',') AS sr_id,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='sr' THEN stm.source_team_name END ORDER BY stm.source_team_name SEPARATOR ',') AS sr_name,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='sr' THEN stm.status END ORDER BY stm.status SEPARATOR ',') AS sr_status,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='ls' THEN stm.source_team_id END ORDER BY stm.source_team_id SEPARATOR ',') AS ls_id,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='ls' THEN stm.source_team_name END ORDER BY stm.source_team_name SEPARATOR ',') AS ls_name,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='ls' THEN stm.status END ORDER BY stm.status SEPARATOR ',') AS ls_status,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='bc' THEN stm.source_team_id END ORDER BY stm.source_team_id SEPARATOR ',') AS bc_id,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='bc' THEN stm.source_team_name END ORDER BY stm.source_team_name SEPARATOR ',') AS bc_name,
+            GROUP_CONCAT(DISTINCT CASE WHEN stm.source='bc' THEN stm.status END ORDER BY stm.status SEPARATOR ',') AS bc_status,
+            COUNT(DISTINCT stm.source) AS mapped_source_count,
+            GROUP_CONCAT(DISTINCT stm.source ORDER BY stm.source SEPARATOR ',') AS mapped_sources
+        FROM our_team ot
+        LEFT JOIN source_team_mapping stm ON stm.our_team_id = ot.id
+        {where_sql}
+        GROUP BY ot.id, ot.sport, ot.canonical_name, ot.status, ot.confidence
+        ON DUPLICATE KEY UPDATE
+            sport=VALUES(sport),
+            canonical_name=VALUES(canonical_name),
+            our_team_status=VALUES(our_team_status),
+            our_team_confidence=VALUES(our_team_confidence),
+            ts_id=VALUES(ts_id),
+            ts_name=VALUES(ts_name),
+            ts_status=VALUES(ts_status),
+            sr_id=VALUES(sr_id),
+            sr_name=VALUES(sr_name),
+            sr_status=VALUES(sr_status),
+            ls_id=VALUES(ls_id),
+            ls_name=VALUES(ls_name),
+            ls_status=VALUES(ls_status),
+            bc_id=VALUES(bc_id),
+            bc_name=VALUES(bc_name),
+            bc_status=VALUES(bc_status),
+            mapped_source_count=VALUES(mapped_source_count),
+            mapped_sources=VALUES(mapped_sources)
+        """,
+        params,
     )
 
 
